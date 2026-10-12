@@ -23,6 +23,12 @@ pub fn powershell(script: &str) -> std::io::Result<std::process::Output> {
         .output()
 }
 
+/// Open a URI with its registered handler (e.g. a Microsoft Store page).
+#[cfg(windows)]
+pub fn open_uri(uri: &str) {
+    let _ = Command::new("explorer").arg(uri).spawn();
+}
+
 /// Reveal a file in the system file manager.
 pub fn show_in_folder(path: &Path) {
     #[cfg(windows)]

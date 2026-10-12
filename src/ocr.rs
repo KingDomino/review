@@ -215,7 +215,13 @@ fn recognize_tesseract(img: &RgbaImage) -> Result<Vec<Word>, String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|e| format!("Live Text needs Tesseract ({e}). Install it with: sudo dnf install tesseract"))?;
+        .map_err(|e| {
+            if cfg!(windows) {
+                format!("Live Text needs a Windows language with text recognition: Settings ▸ Time & language ▸ Language & region ({e})")
+            } else {
+                format!("Live Text needs Tesseract ({e}). Install it with your package manager, e.g. sudo dnf install tesseract")
+            }
+        })?;
     if let Some(mut stdin) = child.stdin.take() {
         // Write from a thread so a full stdout pipe can't deadlock us.
         let data = png;

@@ -167,7 +167,21 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                     ui.add_space(ui.available_height() * 0.35);
                     ui.label(egui::RichText::new(egui_phosphor::regular::WARNING_CIRCLE).size(40.0).color(pal.text_weak));
                     ui.label(egui::RichText::new(format!("“{name}” couldn’t be opened.")).font(FontId::new(16.0, crate::theme::bold())));
-                    ui.label(egui::RichText::new(e).color(pal.text_weak));
+                    ui.label(egui::RichText::new(&e).color(pal.text_weak));
+                    #[cfg(windows)]
+                    {
+                        let links = crate::wic::codec_links(&e);
+                        if !links.is_empty() {
+                            ui.add_space(10.0);
+                            for (label, uri) in links {
+                                if ui.button(*label).clicked() {
+                                    crate::platform::open_uri(uri);
+                                }
+                            }
+                            ui.add_space(4.0);
+                            ui.label(egui::RichText::new("Then open the photo again.").small().color(pal.text_weak));
+                        }
+                    }
                 });
             });
             return;

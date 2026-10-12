@@ -205,10 +205,26 @@ fn is_heif(bytes: &[u8]) -> bool {
 }
 
 fn decode_heif(bytes: &[u8], mut out: Loaded) -> Result<Loaded, String> {
-    let (w, h, rgba, alpha) = crate::heif::decode(bytes)?;
-    out.frames.push(Arc::new(RgbaImage::from_raw(w, h, rgba).ok_or("bad HEIF buffer")?));
-    out.format = if bytes.len() > 12 && &bytes[8..12] == b"avif" { "AVIF image".into() } else { "HEIF image".into() };
-    out.has_alpha = alpha;
+    let avif = bytes.len() > 12 && matches!(&bytes[8..12], b"avif" | b"avis");
+    out.format = if avif { "AVIF image".into() } else { "HEIF image".into() };
+    #[cfg(windows)]
+    {
+        let d = crate::wic::decode(bytes, avif)?;
+        let mut img = RgbaImage::from_raw(d.width, d.height, d.rgba).ok_or("bad HEIF buffer")?;
+        if let Some(icc) = &d.icc {
+            if crate::color::to_srgb(&mut img, icc) {
+                out.icc_name = crate::color::profile_name(icc);
+            }
+        }
+        out.has_alpha = img.pixels().any(|p| p[3] < 255);
+        out.frames.push(Arc::new(if d.orientation > 1 { apply_orientation(img, d.orientation as u32) } else { img }));
+    }
+    #[cfg(not(windows))]
+    {
+        let (w, h, rgba, alpha) = crate::heif::decode(bytes)?;
+        out.frames.push(Arc::new(RgbaImage::from_raw(w, h, rgba).ok_or("bad HEIF buffer")?));
+        out.has_alpha = alpha;
+    }
     Ok(out)
 }
 

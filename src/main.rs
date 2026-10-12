@@ -7,6 +7,7 @@ mod canvas;
 mod color;
 mod dialogs;
 mod document;
+#[cfg(not(windows))]
 mod heif;
 mod imaging;
 mod inspector;
@@ -23,6 +24,8 @@ mod settings;
 mod sidebar;
 mod theme;
 mod view3d;
+#[cfg(windows)]
+mod wic;
 #[cfg(test)]
 mod ui_tests;
 
