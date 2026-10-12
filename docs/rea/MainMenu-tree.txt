@@ -1,0 +1,178 @@
+parents of items not found as menus: []
+### File
+  Import from Camera…   <importFromDevice:>
+  New from Clipboard  [Cmd+'n']   <newFromClipboard:>
+  Open…  [Cmd+'o']   <openDocument:>
+  Open Recent
+    Clear Menu   <clearRecentDocuments:>
+  
+  Close Window  [Cmd+'w']   <performClose:>
+  Close Selected  [Cmd+'W']   <closeSelectedContainers:>
+  Save  [Cmd+'s']   <saveDocument:>
+  Revert to Saved…   <revertDocumentToSaved:>
+  
+  Enter Password…   <gotoEncryptionView:>
+  Edit Permissions…   <editEncryptionOptions:>
+  
+  
+  
+  Import from Scanner…   <importFromDevice:>
+  Take Screenshot
+    From Selection…   <captureSelection:>
+    From Window…   <captureWindow:>
+    From Entire Screen   <captureScreensTimed:>
+  
+  Export As…   <exportSelection:>
+  Export as PDF…   <saveDocumentToPDF:>
+  Preview on Apple Vision Pro...   <spatialSync:>
+  
+  Print…  [Cmd+'p']   <printAllContainers:>
+### Edit
+  Undo  [Cmd+'z']   <undo:>
+  Redo  [Cmd+'Z']   <redo:>
+  
+  Cut  [Cmd+'x']   <cut:>
+  Copy  [Cmd+'c']   <copy:>
+  Paste  [Cmd+'v']   <paste:>
+  Delete   <delete:>
+  Deactivate   <deactivateUSDSelection:>
+  Select All  [Cmd+'a']   <selectAll:>
+  Invert Selection  [Cmd+'I']   <invertSelection:>
+  
+  Insert
+    Page from Scanner…   <pickToolFromSenderTag:>
+    Page from File…   <insertPagesFromFile:>
+    Blank Page   <insertBlankPage:>
+  Move to Trash  [Cmd+'\x08']   <moveToTrash:>
+  
+  Find
+    Find…  [Cmd+'f']   <doFind:>
+    Find Next  [Cmd+'g']   <doFindNext:>
+    Find Previous  [Cmd+'G']   <doFindPrevious:>
+    Use Selection for Find  [Cmd+'e']   <doUseSelectionForFind:>
+    Jump to Selection  [Cmd+'j']   <centerSelectionInVisibleArea:>
+  
+  Spelling and Grammar
+    Show Spelling and Grammar  [Cmd+':']   <showGuessPanel:>
+    Check Document Now  [Cmd+';']   <checkSpelling:>
+    
+    Check Spelling While Typing   <toggleContinuousSpellChecking:>
+    Check Grammar With Spelling   <toggleGrammarChecking:>
+    Correct Spelling Automatically   <toggleAutomaticSpellingCorrection:>
+  Speech
+    Start Speaking   <startSpeaking:>
+    Stop Speaking   <stopSpeaking:>
+### View
+  3D Rendering
+    Item
+  Soft Proof with Profile
+    None   <softProofToNoProfile:>
+    
+  Hide Sidebar  [Opt+Cmd+'1']   <toggleHideSidebar:>
+  Thumbnails  [Opt+Cmd+'2']   <setViewModeContentAndThumbnails:>
+  Table of Contents  [Opt+Cmd+'3']   <setViewModeContentAndOutline:>
+  Highlights and Notes  [Opt+Cmd+'4']   <setViewModeContentAndAnnotations:>
+  Bookmarks  [Opt+Cmd+'5']   <setViewModeContentAndBookmarks:>
+  Contact Sheet  [Opt+Cmd+'6']   <setViewModeContactSheet:>
+  
+  Continuous Scroll  [Cmd+'1']   <setPageViewModeScroll:>
+  Single Page  [Cmd+'2']   <setPageViewModeBookSinglePage:>
+  Two Pages  [Cmd+'3']   <setPageViewModeBookFacingPages:>
+  
+  Show Image Background  [Opt+Cmd+'b']   <toggleImageBackgroundShown:>
+  Use Dark Appearance for PDF   <toggleDarkAppearanceContent:>
+  
+  Actual Size  [Cmd+'0']   <doZoomToActualSize:>
+  Actual Size on All  [Opt+Cmd+'0']   <doZoomToActualSize:>
+  Zoom to Fit  [Cmd+'9']   <doZoomToFit:>
+  Zoom All to Fit  [Opt+Cmd+'9']   <doZoomToFit:>
+  Zoom In  [Cmd+'+']   <doZoomIn:>
+  Zoom All In  [Opt+Cmd+'+']   <doZoomIn:>
+  Zoom Out  [Cmd+'-']   <doZoomOut:>
+  Zoom All Out  [Opt+Cmd+'-']   <doZoomOut:>
+  Zoom to Selection  [Cmd+'*']   <doZoomToSelection:>
+  
+  Show Markup Toolbar  [Cmd+'A']   <toggleEditBanner:>
+  
+  Hide Toolbar  [Opt+Cmd+'t']   <toggleToolbarShown:>
+  Customize Toolbar…   <runToolbarCustomizationPalette:>
+  
+  Slideshow  [Cmd+'F']   <slideshow:>
+  Enter Full Screen  [Ctrl+Cmd+'f']   <toggleFullScreen:>
+### Go
+  Up  [+'\uf72c']   <doScrollUp:>
+  Previous Document  [Opt+'\uf72c']   <doGoToPreviousContainerInstantly:>
+  Down  [+'\uf72d']   <doScrollDown:>
+  Next Document  [Opt+'\uf72d']   <doGoToNextContainerInstantly:>
+  Previous Item  [Opt+'\uf700']   <doGoBackwardInstantly:>
+  Next Item  [Opt+'\uf701']   <doGoForwardInstantly:>
+  Go to Page…  [Opt+Cmd+'g']   <goToPageNumberTextFieldOrPanel:>
+  
+  Back  [Cmd+'[']   <doGoBackInHistory:>
+  Forward  [Cmd+']']   <doGoForwardInHistory:>
+### Tools
+  Annotate
+    Highlight Text  [Ctrl+Cmd+'h']   <pickAKToolFromSenderTag:>
+    Underline Text  [Ctrl+Cmd+'u']   <pickAKToolFromSenderTag:>
+    Strike Through Text  [Ctrl+Cmd+'s']   <pickAKToolFromSenderTag:>
+    
+    Rectangle  [Ctrl+Cmd+'r']   <pickAKToolFromSenderTag:>
+    Oval  [Ctrl+Cmd+'o']   <pickAKToolFromSenderTag:>
+    Line  [Ctrl+Cmd+'i']   <pickAKToolFromSenderTag:>
+    Arrow  [Ctrl+Cmd+'a']   <pickAKToolFromSenderTag:>
+    Polygon   <pickAKToolFromSenderTag:>
+    Star   <pickAKToolFromSenderTag:>
+    
+    Text  [Ctrl+Cmd+'t']   <pickAKToolFromSenderTag:>
+    Speech Bubble   <pickAKToolFromSenderTag:>
+    
+    Mask   <pickAKToolFromSenderTag:>
+    Loupe  [Ctrl+Cmd+'l']   <pickAKToolFromSenderTag:>
+    
+    Note  [Ctrl+Cmd+'n']   <pickToolFromSenderTag:>
+    Signature
+      Item
+  Add to Scene
+  Show Inspector  [Cmd+'i']   <toggleInspectorShown:>
+  Show Magnifier  [+'`']   <pickToolFromSenderTag:>
+  
+  Adjust Color…  [Opt+Cmd+'c']   <pickToolFromSenderTag:>
+  Adjust Size…   <pickToolFromSenderTag:>
+  
+  Automatic Selection   <pickToolFromSenderTag:>
+  Rectangular Selection   <pickToolFromSenderTag:>
+  Text Selection   <pickToolFromSenderTag:>
+  Redact   <pickToolFromSenderTag:>
+  3D Manipulator
+    Move  [Opt+'w']   <set3DManipulator:>
+    Rotate  [Opt+'e']   <set3DManipulator:>
+    Scale  [Opt+'r']   <set3DManipulator:>
+    
+    Adjust Pivot
+      Top   <set3DPivotPosition:>
+      Middle   <set3DPivotPosition:>
+      Bottom   <set3DPivotPosition:>
+      
+      Left   <set3DPivotPosition:>
+      Right   <set3DPivotPosition:>
+      
+      Front   <set3DPivotPosition:>
+      Back   <set3DPivotPosition:>
+      
+      Reset   <set3DPivotPosition:>
+  
+  
+  Add Bookmark  [Cmd+'d']   <bookmarkCurrentPage:>
+  
+  Rotate Left  [Cmd+'l']   <pickToolFromSenderTag:>
+  Rotate Right  [Cmd+'r']   <pickToolFromSenderTag:>
+  Flip Horizontal   <pickToolFromSenderTag:>
+  Flip Vertical   <pickToolFromSenderTag:>
+  Crop  [Cmd+'k']   <pickToolFromSenderTag:>
+  Remove Background  [Cmd+'K']   <removeBackground:>
+  
+  Assign Profile…   <assignProfile:>
+  Show Location Info   <showGeoLocationData:>
+  Show Object Properties   <pickToolFromSenderTag:>
+### Help
+  Preview Help  [Cmd+'?']   <showHelp:>

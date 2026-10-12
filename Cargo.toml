@@ -1,0 +1,38 @@
+[package]
+name = "review"
+version = "1.0.0"
+edition = "2021"
+description = "A fast, Preview-style PDF and image viewer and editor for Linux"
+license = "AGPL-3.0-or-later"
+default-run = "review"
+
+[dependencies]
+eframe = { version = "0.36", default-features = false, features = ["default_fonts", "wgpu", "wayland", "x11", "persistence", "links", "accesskit"] }
+egui = "0.36"
+egui_extras = { version = "0.36", features = ["image"] }
+egui-phosphor = { version = "0.14", features = ["regular", "fill"] }
+mupdf = { version = "0.8", default-features = false, features = ["xps", "svg", "cbz", "img", "html", "epub", "base14-fonts"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "tiff", "bmp", "ico", "tga", "pnm", "dds", "hdr", "exr", "qoi", "rayon"] }
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "wayland", "pollster"] }
+arboard = { version = "3", features = ["wayland-data-control"] }
+kamadak-exif = "0.6"
+crossbeam-channel = "0.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "6"
+trash = "5"
+tiny-skia = "0.11"
+ab_glyph = "0.2"
+libloading = "0.8"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = true
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[dev-dependencies]
+egui_kittest = { version = "0.36", features = ["eframe", "wgpu", "snapshot"] }

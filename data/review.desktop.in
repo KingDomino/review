@@ -1,0 +1,19 @@
+[Desktop Entry]
+Type=Application
+Name=Review
+GenericName=Document and Image Viewer
+Comment=View, annotate and edit PDFs and images
+Exec=@EXEC@ %U
+TryExec=@EXEC@
+Icon=review
+Terminal=false
+StartupNotify=true
+StartupWMClass=review
+Categories=Graphics;Viewer;Office;
+Keywords=pdf;preview;image;photo;annotate;sign;markup;viewer;
+MimeType=@MIME@
+Actions=new-window;
+
+[Desktop Action new-window]
+Name=New Window
+Exec=@EXEC@ --new-window
