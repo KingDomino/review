@@ -1,10 +1,9 @@
-//! Desktop integration: screenshots, speech, printing, single-instance hand-off.
+//! Desktop integration: screenshots, speech, printing, opening windows.
 
-use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crossbeam_channel::{unbounded, Receiver, Sender};
+use crossbeam_channel::Sender;
 
 use crate::app::Msg;
 
@@ -244,113 +243,31 @@ pub fn print_file(file: &Path, printer: &str, copies: u32, ranges: &str, fit: bo
 }
 
 // ---------------------------------------------------------------------------
-// Single instance: the first Review listens on a socket; later launches hand
-// their files over and exit, so files open as tabs in the existing window.
+// Windows: like Preview, every document group gets its own window. Each window is
+// its own process, so one can't take the others down with it.
 
-#[cfg(unix)]
-fn socket_path() -> PathBuf {
-    let dir = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-    let user = std::env::var("USER").unwrap_or_default();
-    dir.join(format!("review-{user}.sock"))
-}
-
-#[cfg(unix)]
-pub fn hand_off(paths: &[PathBuf]) -> bool {
-    use std::os::unix::net::UnixStream;
-    let Ok(mut s) = UnixStream::connect(socket_path()) else { return false };
-    let _ = s.set_write_timeout(Some(std::time::Duration::from_secs(2)));
-    let mut msg = String::from("OPEN\n");
-    for p in paths {
-        let p = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
-        msg.push_str(&p.to_string_lossy());
-        msg.push('\n');
+/// Open `paths` in a new Review window, cascaded from `near` (the current window's outer rect).
+pub fn open_window(paths: &[PathBuf], near: Option<egui::Rect>) {
+    let Ok(exe) = std::env::current_exe() else { return };
+    let mut cmd = Command::new(exe);
+    cmd.arg("--").args(paths);
+    match near {
+        Some(r) => cmd.env(CASCADE_ENV, format!("{} {} {} {}", r.min.x + 28.0, r.min.y + 28.0, r.width(), r.height())),
+        None => cmd.env_remove(CASCADE_ENV),
+    };
+    if let Ok(mut child) = cmd.spawn() {
+        // Reap it when it exits so it doesn't linger as a zombie while this window stays open.
+        std::thread::spawn(move || child.wait());
     }
-    msg.push('\n');
-    s.write_all(msg.as_bytes()).is_ok()
 }
 
-#[cfg(unix)]
-pub fn listen() -> Option<Receiver<Vec<PathBuf>>> {
-    use std::os::unix::net::UnixListener;
-    let path = socket_path();
-    let _ = std::fs::remove_file(&path);
-    let listener = UnixListener::bind(&path).ok()?;
-    let (tx, rx) = unbounded();
-    std::thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            let mut paths = Vec::new();
-            let reader = BufReader::new(stream);
-            for (i, line) in reader.lines().map_while(Result::ok).enumerate() {
-                if i == 0 {
-                    if line != "OPEN" {
-                        break;
-                    }
-                    continue;
-                }
-                if line.is_empty() {
-                    break;
-                }
-                paths.push(PathBuf::from(line));
-            }
-            if tx.send(paths).is_err() {
-                break;
-            }
-        }
-    });
-    Some(rx)
-}
+pub const CASCADE_ENV: &str = "REVIEW_CASCADE";
 
-// Windows: the running instance listens on a localhost port recorded in the config folder.
-#[cfg(not(unix))]
-fn port_file() -> PathBuf {
-    crate::settings::config_dir().join("instance.port")
-}
-
-#[cfg(not(unix))]
-pub fn hand_off(paths: &[PathBuf]) -> bool {
-    use std::net::TcpStream;
-    let Ok(port) = std::fs::read_to_string(port_file()) else { return false };
-    let Ok(port) = port.trim().parse::<u16>() else { return false };
-    let Ok(mut s) = TcpStream::connect_timeout(&([127, 0, 0, 1], port).into(), std::time::Duration::from_millis(300)) else { return false };
-    let mut msg = String::from("OPEN\n");
-    for p in paths {
-        let p = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
-        msg.push_str(&p.to_string_lossy());
-        msg.push('\n');
-    }
-    msg.push('\n');
-    s.write_all(msg.as_bytes()).is_ok()
-}
-
-#[cfg(not(unix))]
-pub fn listen() -> Option<Receiver<Vec<PathBuf>>> {
-    use std::net::TcpListener;
-    let listener = TcpListener::bind(("127.0.0.1", 0)).ok()?;
-    let port = listener.local_addr().ok()?.port();
-    let _ = std::fs::create_dir_all(crate::settings::config_dir());
-    std::fs::write(port_file(), port.to_string()).ok()?;
-    let (tx, rx) = unbounded();
-    std::thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            let mut paths = Vec::new();
-            for (i, line) in BufReader::new(stream).lines().map_while(Result::ok).enumerate() {
-                if i == 0 {
-                    if line != "OPEN" {
-                        break;
-                    }
-                    continue;
-                }
-                if line.is_empty() {
-                    break;
-                }
-                paths.push(PathBuf::from(line));
-            }
-            if tx.send(paths).is_err() {
-                break;
-            }
-        }
-    });
-    Some(rx)
+/// Position and size for a window opened by `open_window`.
+pub fn cascade() -> Option<egui::Rect> {
+    let v = std::env::var(CASCADE_ENV).ok()?;
+    let n: Vec<f32> = v.split(' ').filter_map(|x| x.parse().ok()).collect();
+    (n.len() == 4).then(|| egui::Rect::from_min_size(egui::pos2(n[0], n[1]), egui::vec2(n[2], n[3])))
 }
 
 /// File chooser via kdialog or zenity, for systems without xdg-desktop-portal.
@@ -366,11 +283,4 @@ pub fn pick_files_fallback(dir: Option<&Path>) -> Vec<PathBuf> {
     out.filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).lines().filter(|l| !l.is_empty()).map(PathBuf::from).collect())
         .unwrap_or_default()
-}
-
-pub fn cleanup_socket() {
-    #[cfg(unix)]
-    let _ = std::fs::remove_file(socket_path());
-    #[cfg(not(unix))]
-    let _ = std::fs::remove_file(port_file());
 }

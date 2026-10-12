@@ -100,7 +100,7 @@ fn menubar(app: &mut App, ui: &mut Ui) {
                 for p in recent {
                     let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
                     if ui.add_enabled(p.exists(), egui::Button::new(name)).on_hover_text(p.to_string_lossy()).clicked() {
-                        app.open_paths(vec![p]);
+                        app.open_window(vec![p]);
                         ui.close();
                     }
                 }

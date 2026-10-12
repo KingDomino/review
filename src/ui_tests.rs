@@ -22,7 +22,7 @@ pub fn harness(files: Vec<PathBuf>, dark: bool) -> Harness<'static, App> {
         .with_pixels_per_point(1.5)
         .with_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light })
         .wgpu()
-        .build_eframe(move |cc| App::new(cc, files, None))
+        .build_eframe(move |cc| App::new(cc, files))
 }
 
 /// Step until documents are loaded and no tiles are pending (or timeout).
@@ -660,4 +660,43 @@ fn view_3d_models() {
     settle(&mut h);
     let snap = image::open(&out).expect("snapshot written").to_rgba8();
     assert_eq!(snap.dimensions(), (2400, 1800));
+}
+
+/// Ctrl+wheel zoom keeps the point under the cursor in place (regression: it jumped to page 1).
+#[test]
+fn zoom_keeps_position() {
+    let dir = tmp("zoompos");
+    let pdf = crate::pdf::tests::big_pdf(&dir, 80);
+    let mut h = harness(vec![pdf], false);
+    settle(&mut h);
+    let at = egui::pos2(700.0, 450.0);
+    h.event(egui::Event::PointerMoved(at));
+    let zoom = |h: &mut Harness<'static, App>, f: f32| {
+        for _ in 0..8 {
+            h.event(egui::Event::PointerMoved(at));
+            h.event(egui::Event::Zoom(f));
+            h.step();
+        }
+        settle(h);
+    };
+    zoom(&mut h, 0.75);
+    assert!(h.state().docs[0].zoom < 0.4, "zoomed out to {}", h.state().docs[0].zoom);
+    for _ in 0..30 {
+        h.event(egui::Event::PointerMoved(at));
+        h.event(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, -400.0), modifiers: egui::Modifiers::NONE, phase: egui::TouchPhase::Move });
+        h.step();
+    }
+    settle(&mut h);
+    let page = |h: &Harness<'static, App>| {
+        let d = &h.state().docs[0];
+        let pr = &h.state().page_rects;
+        // The page under the cursor.
+        pr.iter().find(|(_, r)| r.contains(at)).map(|(i, _)| *i).unwrap_or(d.current)
+    };
+    let before = page(&h);
+    assert!(before > 10, "scrolled into the middle (page {before})");
+    zoom(&mut h, 1.25);
+    let after = page(&h);
+    assert!(h.state().docs[0].zoom > 0.9);
+    assert_eq!(after, before, "page under the cursor after zooming in");
 }

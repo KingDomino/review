@@ -119,6 +119,23 @@ pub fn fit_zoom(doc: &Document, view: Vec2, actual: f32) -> f32 {
     }
 }
 
+/// Scroll offset that keeps the document point at `local` (relative to the view) in place
+/// when the zoom changes from `old_zoom` to `doc.zoom`. Anchoring on a page rather than
+/// scaling the offset matters because margins and gaps between pages don't scale.
+fn anchored_offset(doc: &Document, old_zoom: f32, view: Vec2, offset: Vec2, local: Vec2) -> Vec2 {
+    let p = (offset + local).to_pos2();
+    let (old, _) = layout(doc, old_zoom, view);
+    let Some(b) = old.iter().min_by(|a, b| a.rect.distance_sq_to_pos(p).total_cmp(&b.rect.distance_sq_to_pos(p))) else {
+        return offset;
+    };
+    let rel = (p - b.rect.min) / old_zoom.max(1e-4);
+    let (new, _) = layout(doc, doc.zoom, view);
+    match new.iter().find(|n| n.idx == b.idx) {
+        Some(n) => (n.rect.min + rel * doc.zoom).to_vec2() - local,
+        None => offset,
+    }
+}
+
 /// Screen-space hit: which page box (by index into the layout) is under `p`.
 fn page_at(boxes: &[PageBox], origin: Pos2, p: Pos2, slop: f32) -> Option<PageBox> {
     boxes.iter().find(|b| b.rect.translate(origin.to_vec2()).expand(slop).contains(p)).copied()
@@ -170,7 +187,8 @@ pub fn show(app: &mut App, ui: &mut Ui) {
     let px_scale = app.settings.image_pixel_scale;
     let doc_id = doc.id;
     let canvas_rect = ui.max_rect();
-    let scroll_id = ui.make_persistent_id(("canvas", doc_id));
+    // Must match how ScrollArea derives its id from `id_salt` below.
+    let scroll_id = ui.make_persistent_id(egui::IdSalt::new(("canvas", doc_id)));
     let prev_offset = egui::scroll_area::State::load(&ctx, scroll_id).map(|s| s.offset).unwrap_or(Vec2::ZERO);
 
     // --- Zoom (fit modes, pinch, Ctrl+wheel, zoom-to-selection) ---------------------------
@@ -190,13 +208,10 @@ pub fn show(app: &mut App, ui: &mut Ui) {
             let f = ((d.zoom * zd).clamp(0.05, 64.0)) / d.zoom;
             d.fit = Fit::None;
             d.zoom *= f;
-            let local = p - canvas_rect.min;
-            new_offset = Some((prev_offset + local) * f - local);
+            new_offset = Some(anchored_offset(d, old_zoom, view, prev_offset, p - canvas_rect.min));
         } else if (d.zoom - old_zoom).abs() > 1e-4 && d.fit == Fit::None && d.pending_scroll.is_none() {
             // Toolbar/menu zoom: keep the view centre steady.
-            let f = d.zoom / old_zoom;
-            let local = view / 2.0;
-            new_offset = Some((prev_offset + local) * f - local);
+            new_offset = Some(anchored_offset(d, old_zoom, view, prev_offset, view / 2.0));
         }
         let zoom_to = ctx.data_mut(|m| {
             let v = m.get_temp::<(usize, Rect)>(egui::Id::new("zoom-to"));

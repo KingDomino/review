@@ -29,37 +29,35 @@ use std::path::PathBuf;
 
 fn usage() {
     println!(
-        "Review {} — view and edit PDFs and images\n\nUsage: review [--new-window] [FILE|FOLDER]...\n\n  --new-window   don't hand files to an already-running Review\n  --version      print the version\n",
+        "Review {} — view and edit PDFs and images\n\nUsage: review [FILE|FOLDER]...\n\nThe files open together in a new window.\n\n  --version      print the version\n",
         env!("CARGO_PKG_VERSION")
     );
 }
 
 fn main() -> eframe::Result {
     let mut files: Vec<PathBuf> = Vec::new();
-    let mut new_window = false;
+    let mut options_done = false;
     for a in std::env::args_os().skip(1) {
         match a.to_str() {
-            Some("--help") | Some("-h") => {
+            Some("--") if !options_done => options_done = true,
+            Some("--help") | Some("-h") if !options_done => {
                 usage();
                 return Ok(());
             }
-            Some("--version") | Some("-V") => {
+            Some("--version") | Some("-V") if !options_done => {
                 println!("review {}", env!("CARGO_PKG_VERSION"));
                 return Ok(());
             }
-            Some("--new-window") => new_window = true,
             Some(s) if s.starts_with("file://") => files.push(PathBuf::from(percent_decode(&s[7..]))),
             _ => files.push(PathBuf::from(a)),
         }
     }
-    let settings = settings::Settings::load();
-    let single = settings.open_mode == settings::OpenMode::SameWindow && !new_window;
-
-    // Hand the files to a running instance (instant "open" for double-clicks in Dolphin).
-    if single && !files.is_empty() && platform::hand_off(&files) {
-        return Ok(());
+    // Preferences ▸ "Open each file in its own window": one window per file (a folder stays one group).
+    if settings::Settings::load().open_mode == settings::OpenMode::OwnWindow && files.len() > 1 {
+        for f in files.split_off(1) {
+            platform::open_window(&[f], None);
+        }
     }
-    let ipc = if single { platform::listen() } else { None };
 
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/review.png")).ok();
     let mut viewport = egui::ViewportBuilder::default()
@@ -71,21 +69,18 @@ fn main() -> eframe::Result {
     if let Some(icon) = icon {
         viewport = viewport.with_icon(icon);
     }
+    // A window opened from another one cascades from it instead of restoring the saved geometry.
+    let cascade = platform::cascade();
+    if let Some(r) = cascade {
+        viewport = viewport.with_position(r.min).with_inner_size(r.size());
+    }
     let options = eframe::NativeOptions {
         viewport,
         renderer: eframe::Renderer::Wgpu,
-        persist_window: true,
+        persist_window: cascade.is_none(),
         ..Default::default()
     };
-    let res = eframe::run_native(
-        "review",
-        options,
-        Box::new(move |cc| Ok(Box::new(app::App::new(cc, files, ipc)))),
-    );
-    if single {
-        platform::cleanup_socket();
-    }
-    res
+    eframe::run_native("review", options, Box::new(move |cc| Ok(Box::new(app::App::new(cc, files)))))
 }
 
 fn percent_decode(s: &str) -> String {

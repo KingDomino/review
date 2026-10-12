@@ -99,7 +99,6 @@ pub struct SearchState {
 
 pub enum Msg {
     ImageLoaded { doc: u64, result: Result<imaging::Loaded, String> },
-    Opened(Vec<PathBuf>),
     Chosen { purpose: Choose, paths: Vec<PathBuf> },
     ImageSaved { doc: u64, path: PathBuf, result: Result<(), String>, reload: bool },
     Info(String),
@@ -409,22 +408,12 @@ pub fn shortcut_text(a: Action) -> String {
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>, files: Vec<PathBuf>, ipc: Option<Receiver<Vec<PathBuf>>>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, files: Vec<PathBuf>) -> Self {
         let ctx = cc.egui_ctx.clone();
         crate::theme::install(&ctx);
         let rp = ctx.clone();
         let (engine, events) = Engine::new(Arc::new(move || rp.request_repaint()));
         let (msg_tx, msg_rx) = unbounded();
-        if let Some(ipc) = ipc {
-            let tx = msg_tx.clone();
-            let c = ctx.clone();
-            std::thread::spawn(move || {
-                for paths in ipc {
-                    let _ = tx.send(Msg::Opened(paths));
-                    c.request_repaint();
-                }
-            });
-        }
         let settings = Settings::load();
         // A small pool decodes images so opening a folder of photos can't spawn hundreds of threads.
         let (image_jobs, jobs_rx) = unbounded::<(u64, PathBuf)>();
@@ -539,6 +528,41 @@ impl App {
 
     // ------------------------------------------------------------------
     // Opening
+
+    /// File ▸ Open, Open Recent and drops: like Preview, a group of files opens in a window of
+    /// its own, unless this window is still empty. With "Open each file in its own window",
+    /// every file gets one.
+    pub fn open_window(&mut self, paths: Vec<PathBuf>) {
+        let mut paths: Vec<PathBuf> = paths.into_iter().map(|p| std::fs::canonicalize(&p).unwrap_or(p)).collect();
+        let own = self.settings.open_mode == crate::settings::OpenMode::OwnWindow;
+        let near = self.ctx.input(|i| i.viewport().outer_rect);
+        if self.docs.is_empty() {
+            let rest = if own && paths.len() > 1 { paths.split_off(1) } else { Vec::new() };
+            self.open_paths(paths);
+            paths = rest;
+        }
+        if paths.is_empty() {
+            return;
+        }
+        // Open Recent etc.: a file that's already open here is just brought to the front.
+        if let [p] = paths.as_slice() {
+            if let Some(i) = self.docs.iter().position(|d| d.path.as_deref() == Some(p.as_path())) {
+                self.activate(i);
+                return;
+            }
+        }
+        for p in &paths {
+            self.settings.add_recent(p.clone());
+        }
+        self.settings.save();
+        if own {
+            for p in paths {
+                crate::platform::open_window(&[p], near);
+            }
+        } else {
+            crate::platform::open_window(&paths, near);
+        }
+    }
 
     pub fn open_paths(&mut self, paths: Vec<PathBuf>) {
         let mut first_new = None;
@@ -833,10 +857,6 @@ impl App {
                         self.update_title();
                         self.enforce_memory_budget();
                     }
-                }
-                Msg::Opened(paths) => {
-                    self.open_paths(paths);
-                    self.ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
                 Msg::Chosen { purpose, paths } => self.file_chosen(purpose, paths),
                 Msg::ImageSaved { doc, path, result, reload } => {
@@ -1856,7 +1876,7 @@ impl App {
             if let Err(e) = std::fs::copy(&p, &dest) {
                 self.error(format!("Couldn’t duplicate: {e}"));
             } else {
-                self.open_paths(vec![dest]);
+                self.open_window(vec![dest]);
             }
         }
     }
@@ -2020,7 +2040,7 @@ impl App {
             return;
         }
         match purpose {
-            Choose::Open => self.open_paths(paths),
+            Choose::Open => self.open_window(paths),
             Choose::InsertPages { doc, at } => self.insert_files(doc, at, paths),
         }
     }
@@ -2192,7 +2212,7 @@ impl App {
         let target: Option<(u64, usize)> = ctx.data(|d| d.get_temp(egui::Id::new("drop-target")));
         match target {
             Some((doc, at)) => self.insert_files(doc, at, dropped),
-            None => self.open_paths(dropped),
+            None => self.open_window(dropped),
         }
     }
 }
