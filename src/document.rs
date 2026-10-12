@@ -499,43 +499,8 @@ pub fn human_size(n: u64) -> String {
 }
 
 pub fn fmt_time(t: Option<std::time::SystemTime>) -> String {
-    let Some(t) = t else { return "—".into() };
-    let Ok(d) = t.duration_since(std::time::UNIX_EPOCH) else { return "—".into() };
-    // Civil-from-days (UTC) without pulling in a date crate.
-    let secs = d.as_secs() as i64 + local_offset();
-    let days = secs.div_euclid(86400);
-    let rem = secs.rem_euclid(86400);
-    let z = days + 719468;
-    let era = z.div_euclid(146097);
-    let doe = z - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    format!("{y:04}-{m:02}-{day:02} {:02}:{:02}", rem / 3600, (rem % 3600) / 60)
-}
-
-fn local_offset() -> i64 {
-    // Read the zone offset from `date +%z` once; good enough for display.
-    static OFF: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
-    *OFF.get_or_init(|| {
-        std::process::Command::new("date")
-            .arg("+%z")
-            .output()
-            .ok()
-            .and_then(|o| {
-                let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                if s.len() != 5 {
-                    return None;
-                }
-                let sign = if s.starts_with('-') { -1 } else { 1 };
-                let h: i64 = s[1..3].parse().ok()?;
-                let m: i64 = s[3..5].parse().ok()?;
-                Some(sign * (h * 3600 + m * 60))
-            })
-            .unwrap_or(0)
-    })
+    match t {
+        Some(t) => chrono::DateTime::<chrono::Local>::from(t).format("%Y-%m-%d %H:%M").to_string(),
+        None => "—".into(),
+    }
 }

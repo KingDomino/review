@@ -1201,9 +1201,7 @@ impl App {
             MoveToTrash => self.move_to_trash(),
             ShowInFolder => {
                 if let Some(p) = self.doc().and_then(|d| d.path.clone()) {
-                    if let Some(dir) = p.parent() {
-                        let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
-                    }
+                    crate::platform::show_in_folder(&p);
                 }
             }
             EditPermissions => {

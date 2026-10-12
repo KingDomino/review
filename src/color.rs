@@ -30,6 +30,7 @@ fn profile_dirs() -> Vec<PathBuf> {
         "/usr/share/ghostscript/iccprofiles",
         "/System/Library/ColorSync/Profiles",
         "/Library/ColorSync/Profiles",
+        "C:\\Windows\\System32\\spool\\drivers\\color",
     ]
     .iter()
     .map(PathBuf::from)

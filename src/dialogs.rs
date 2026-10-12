@@ -54,6 +54,7 @@ pub struct ExportState {
 
 pub struct PrintState {
     pub printers: Vec<String>,
+    loading: Option<Receiver<Vec<String>>>,
     pub printer: usize,
     pub copies: u32,
     pub range: String,
@@ -126,8 +127,12 @@ impl Dialog {
     }
 
     pub fn print() -> Dialog {
-        let printers = crate::platform::printers();
-        Dialog::Print(PrintState { printers, printer: 0, copies: 1, range: String::new(), fit: true, two_sided: false, busy: false })
+        // Looking printers up can take a moment (PowerShell / network printers): do it off the UI thread.
+        let (tx, rx) = unbounded();
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::platform::printers());
+        });
+        Dialog::Print(PrintState { printers: Vec::new(), loading: Some(rx), printer: 0, copies: 1, range: String::new(), fit: true, two_sided: false, busy: false })
     }
 
     pub fn adjust_color(d: &Document) -> Dialog {
@@ -493,14 +498,24 @@ fn estimate(px: u64, f: ExportFormat, q: u8) -> u64 {
 
 fn print_dialog(app: &mut App, ctx: &egui::Context, st: &mut PrintState) -> bool {
     let pal = Palette::of(ctx);
+    if let Some(rx) = &st.loading {
+        if let Ok(p) = rx.try_recv() {
+            st.printers = p;
+            st.loading = None;
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
     let mut keep = true;
     let mut go = false;
     window("Print").show(ctx, |ui| {
         ui.set_width(380.0);
         egui::Grid::new("print").num_columns(2).spacing(vec2(10.0, 8.0)).show(ui, |ui| {
             ui.label("Printer:");
-            if st.printers.is_empty() {
-                ui.label(RichText::new("No printers found (is CUPS running?)").color(pal.text_weak));
+            if st.loading.is_some() {
+                ui.add(egui::Spinner::new());
+            } else if st.printers.is_empty() {
+                ui.label(RichText::new(if cfg!(windows) { "No printers found" } else { "No printers found (is CUPS running?)" }).color(pal.text_weak));
             } else {
                 egui::ComboBox::from_id_salt("printer").selected_text(st.printers[st.printer.min(st.printers.len() - 1)].clone()).width(220.0).show_ui(ui, |ui| {
                     for (i, p) in st.printers.iter().enumerate() {
@@ -687,7 +702,12 @@ fn preferences(app: &mut App, ctx: &egui::Context) -> bool {
                 ui.vertical(|ui| {
                     ui.checkbox(&mut s.live_text, "Select and search text in photos and scanned pages");
                     if !crate::ocr::available() {
-                        ui.label(RichText::new("Needs Tesseract: sudo dnf install tesseract").small().color(Palette::of(ui.ctx()).text_weak));
+                        let hint = if cfg!(windows) {
+                            "Add a language with text recognition in Settings › Time & language"
+                        } else {
+                            "Needs Tesseract: sudo dnf install tesseract"
+                        };
+                        ui.label(RichText::new(hint).small().color(Palette::of(ui.ctx()).text_weak));
                     }
                 });
                 ui.end_row();

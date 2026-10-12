@@ -1,6 +1,6 @@
 [package]
 name = "review"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 description = "A fast, Preview-style PDF and image viewer and editor for Linux"
 license = "AGPL-3.0-or-later"
@@ -24,6 +24,7 @@ trash = "5"
 tiny-skia = "0.11"
 ab_glyph = "0.2"
 libloading = "0.8"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 lcms2 = { version = "6", features = ["static"] }
 jxl-oxide = { version = "0.12", features = ["image"] }
 rawler = "0.8"
@@ -44,3 +45,18 @@ opt-level = 2
 
 [dev-dependencies]
 egui_kittest = { version = "0.36", features = ["eframe", "wgpu", "snapshot"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Foundation",
+    "Foundation_Collections",
+    "Globalization",
+    "Graphics_Imaging",
+    "Media_Ocr",
+    "Storage_Streams",
+    "Win32_System_Registry",
+    "Win32_System_WinRT",
+] }
+
+[build-dependencies]
+embed-resource = "3"

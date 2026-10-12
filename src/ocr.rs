@@ -35,10 +35,83 @@ pub struct OcrResult {
     pub text: Result<Arc<PageText>, String>,
 }
 
-/// Is the `tesseract` command installed?
+/// Can Live Text run? (Windows' built-in OCR, or the `tesseract` command.)
 pub fn available() -> bool {
+    #[cfg(windows)]
+    if winocr::available() {
+        return true;
+    }
+    tesseract_available()
+}
+
+fn tesseract_available() -> bool {
     static OK: OnceLock<bool> = OnceLock::new();
-    *OK.get_or_init(|| Command::new("tesseract").arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false))
+    *OK.get_or_init(|| Command::new(tesseract_cmd()).arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false))
+}
+
+fn tesseract_cmd() -> String {
+    if cfg!(windows) {
+        let default = r"C:\Program Files\Tesseract-OCR\tesseract.exe";
+        if std::path::Path::new(default).exists() {
+            return default.to_string();
+        }
+    }
+    "tesseract".to_string()
+}
+
+/// Windows 10/11 ship an OCR engine (Windows.Media.Ocr) using the user's display languages.
+#[cfg(windows)]
+mod winocr {
+    use super::Word;
+    use egui::{pos2, Rect};
+    use image::RgbaImage;
+    use std::sync::OnceLock;
+    use windows::Graphics::Imaging::{BitmapPixelFormat, SoftwareBitmap};
+    use windows::Media::Ocr::OcrEngine;
+    use windows::Storage::Streams::DataWriter;
+
+    fn init() {
+        // SAFETY: initialising the WinRT apartment for this thread; repeated calls are harmless.
+        unsafe {
+            let _ = windows::Win32::System::WinRT::RoInitialize(windows::Win32::System::WinRT::RO_INIT_MULTITHREADED);
+        }
+    }
+
+    pub fn available() -> bool {
+        static OK: OnceLock<bool> = OnceLock::new();
+        *OK.get_or_init(|| {
+            init();
+            OcrEngine::TryCreateFromUserProfileLanguages().is_ok()
+        })
+    }
+
+    pub fn recognize(img: &RgbaImage) -> windows::core::Result<Vec<Word>> {
+        init();
+        let engine = OcrEngine::TryCreateFromUserProfileLanguages()?;
+        let max = OcrEngine::MaxImageDimension().unwrap_or(10000).max(1000) as f32;
+        let (w, h) = img.dimensions();
+        let k = (max / w.max(h) as f32).min(1.0);
+        let work = if k < 1.0 { image::imageops::resize(img, (w as f32 * k) as u32, (h as f32 * k) as u32, image::imageops::FilterType::Triangle) } else { img.clone() };
+        let bgra: Vec<u8> = work.pixels().flat_map(|p| [p[2], p[1], p[0], 255]).collect();
+        let writer = DataWriter::new()?;
+        writer.WriteBytes(&bgra)?;
+        let buffer = writer.DetachBuffer()?;
+        let bmp = SoftwareBitmap::CreateCopyFromBuffer(&buffer, BitmapPixelFormat::Bgra8, work.width() as i32, work.height() as i32)?;
+        let result = engine.RecognizeAsync(&bmp)?.join()?;
+        let lines = result.Lines()?;
+        let mut out = Vec::new();
+        for li in 0..lines.Size()? {
+            let line = lines.GetAt(li)?;
+            let words = line.Words()?;
+            for wi in 0..words.Size()? {
+                let word = words.GetAt(wi)?;
+                let r = word.BoundingRect()?;
+                let rect = Rect::from_min_size(pos2(r.X / k, r.Y / k), egui::vec2(r.Width / k, r.Height / k));
+                out.push(Word { text: word.Text()?.to_string(), rect, line: (0, 0, li) });
+            }
+        }
+        Ok(out)
+    }
 }
 
 /// English plus the desktop language, limited to installed language packs.
@@ -46,7 +119,7 @@ pub fn languages() -> String {
     static LANGS: OnceLock<String> = OnceLock::new();
     LANGS
         .get_or_init(|| {
-            let installed: Vec<String> = Command::new("tesseract")
+            let installed: Vec<String> = Command::new(tesseract_cmd())
                 .arg("--list-langs")
                 .output()
                 .map(|o| String::from_utf8_lossy(&o.stdout).lines().skip(1).map(|l| l.trim().to_string()).collect())
@@ -112,8 +185,16 @@ pub struct Word {
     pub line: (u32, u32, u32),
 }
 
-/// Run Tesseract on an image and return its words.
+/// Recognise words in an image (Windows OCR when available, otherwise Tesseract).
 pub fn recognize(img: &RgbaImage) -> Result<Vec<Word>, String> {
+    #[cfg(windows)]
+    if winocr::available() {
+        return winocr::recognize(img).map_err(|e| e.to_string());
+    }
+    recognize_tesseract(img)
+}
+
+fn recognize_tesseract(img: &RgbaImage) -> Result<Vec<Word>, String> {
     // Tesseract works best with text 20–40 px tall: enlarge small images, shrink huge ones.
     let (w, h) = img.dimensions();
     let long = w.max(h) as f32;
@@ -128,7 +209,7 @@ pub fn recognize(img: &RgbaImage) -> Result<Vec<Word>, String> {
     let mut png = Vec::new();
     grey.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).map_err(|e| e.to_string())?;
 
-    let mut child = Command::new("tesseract")
+    let mut child = Command::new(tesseract_cmd())
         .args(["stdin", "stdout", "-l", &languages(), "--psm", "3", "tsv"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

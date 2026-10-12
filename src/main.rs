@@ -1,4 +1,5 @@
-//! Review — a fast, Preview-style viewer and editor for PDFs and images on Linux.
+//! Review — a fast, Preview-style viewer and editor for PDFs and images.
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 
 mod annots;
 mod app;

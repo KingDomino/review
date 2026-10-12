@@ -65,9 +65,26 @@ impl Palette {
     }
 }
 
-/// The desktop accent colour: KDE's kdeglobals, else a calm blue.
+/// The desktop accent colour: Windows' DWM accent, KDE's kdeglobals, else a calm blue.
 pub fn accent() -> Color32 {
     let fallback = Color32::from_rgb(0x2F, 0x7C, 0xF6);
+    #[cfg(windows)]
+    {
+        use windows::core::w;
+        use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+        let mut value: u32 = 0;
+        let mut size = std::mem::size_of::<u32>() as u32;
+        // SAFETY: reading a DWORD into a correctly sized buffer.
+        let ok = unsafe {
+            RegGetValueW(HKEY_CURRENT_USER, w!("Software\\Microsoft\\Windows\\DWM"), w!("AccentColor"), RRF_RT_REG_DWORD, None, Some(&mut value as *mut u32 as *mut _), Some(&mut size))
+        };
+        if ok.is_ok() {
+            // Stored as 0xAABBGGRR.
+            return Color32::from_rgb((value & 0xFF) as u8, (value >> 8 & 0xFF) as u8, (value >> 16 & 0xFF) as u8);
+        }
+        return fallback;
+    }
+    #[allow(unreachable_code)]
     let Some(cfg) = dirs::config_dir() else { return fallback };
     let Ok(text) = std::fs::read_to_string(cfg.join("kdeglobals")) else { return fallback };
     let mut section = "";

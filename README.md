@@ -1,6 +1,6 @@
 # Review
 
-**A fast, Preview-style viewer and editor for PDFs and images on Linux, written in Rust.**
+**A fast, Preview-style viewer and editor for PDFs, images and 3D models on Linux and Windows, written in Rust.**
 
 Review brings the macOS Preview workflow to Linux: open PDFs and photos instantly, mark
 them up, sign, fill forms, rearrange pages, crop, resize, adjust colour and export. Its
@@ -38,6 +38,23 @@ Optional runtime helpers (the installer tells you which ones are missing):
 | Printing | `cups-client` (`lp`) |
 | File ▸ Take Screenshot | `spectacle` (KDE), `gnome-screenshot`, or `grim` + `slurp` |
 | Edit ▸ Speech | `speech-dispatcher-utils` |
+
+## Install (Windows 10 / 11)
+
+Grab `Review-windows-x64.zip` (Intel/AMD) or `Review-windows-arm64.zip` (ARM, e.g. Snapdragon
+or Windows on a Mac) from the [Releases](https://github.com/KingDomino/review/releases) page,
+unzip it, and double-click **install.cmd**. No administrator rights are needed: Review installs
+into `%LOCALAPPDATA%\Programs\Review`, adds a Start Menu entry, registers *Open with ▸ Review*
+for PDFs, images and 3D models, and appears under *Settings ▸ Apps ▸ Default apps*. Remove it from
+*Settings ▸ Apps* or with **uninstall.cmd**.
+
+On Windows, Live Text uses the OCR engine built into Windows (no extra install), scanning uses
+the Windows scan dialog (WIA), and printing hands the document to the system print dialog. HEIC
+photos need `libheif.dll` on the `PATH`.
+
+To build it yourself on Windows: install Rust (rustup) and LLVM/clang, then
+`cargo build --release` (MSVC) — or cross-compile from macOS/Linux with
+`ZIG_DIR=… scripts/cross-build.sh windows`.
 
 ## What it does
 
@@ -103,7 +120,7 @@ cargo test                       # engine, imaging and headless UI tests
 cargo test -- --ignored          # also writes screenshots to $TMPDIR/review-shots
 ```
 
-`scripts/cross-build.sh` builds the Linux binaries in `dist/` from macOS using Zig.
+`scripts/cross-build.sh` builds the Linux and Windows binaries in `dist/` from macOS or Linux using Zig.
 
 | Module | Role |
 |---|---|

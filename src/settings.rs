@@ -84,6 +84,9 @@ impl Default for Settings {
 }
 
 fn whoami() -> String {
+    if cfg!(windows) {
+        return std::env::var("USERNAME").unwrap_or_default();
+    }
     // Full name from the GECOS field, falling back to the login name.
     let user = std::env::var("USER").unwrap_or_default();
     if let Ok(passwd) = std::fs::read_to_string("/etc/passwd") {

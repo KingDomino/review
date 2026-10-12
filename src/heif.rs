@@ -24,7 +24,7 @@ const HEIF_CHANNEL_INTERLEAVED: c_int = 10;
 fn lib() -> Option<&'static Library> {
     static LIB: OnceLock<Option<Library>> = OnceLock::new();
     LIB.get_or_init(|| {
-        for name in ["libheif.so.1", "libheif.so", "libheif.1.dylib", "libheif.dylib", "/opt/homebrew/lib/libheif.dylib"] {
+        for name in ["libheif.so.1", "libheif.so", "libheif.1.dylib", "libheif.dylib", "/opt/homebrew/lib/libheif.dylib", "libheif.dll", "heif.dll"] {
             // SAFETY: loading a well-known system library with no special init requirements.
             if let Ok(l) = unsafe { Library::new(name) } {
                 return Some(l);
