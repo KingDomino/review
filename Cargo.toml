@@ -24,6 +24,14 @@ trash = "5"
 tiny-skia = "0.11"
 ab_glyph = "0.2"
 libloading = "0.8"
+lcms2 = { version = "6", features = ["static"] }
+jxl-oxide = { version = "0.12", features = ["image"] }
+rawler = "0.8"
+gltf = "1.4"
+tobj = "4"
+stl_io = "0.11"
+openusd = "0.8"
+bytemuck = "1"
 
 [profile.release]
 opt-level = 3

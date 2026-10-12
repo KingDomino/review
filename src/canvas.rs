@@ -156,6 +156,10 @@ pub fn show(app: &mut App, ui: &mut Ui) {
             return;
         }
     }
+    if app.docs[app.active].kind == Kind::Model {
+        crate::view3d::show(app, ui, pal.canvas);
+        return;
+    }
     if app.contact_sheet {
         contact_sheet(app, ui);
         return;
@@ -321,6 +325,8 @@ pub fn show(app: &mut App, ui: &mut Ui) {
     }
 
     page_badge(app, ui, canvas_rect);
+    live_text_button(app, ui, canvas_rect);
+    animation_controls(app, ui, canvas_rect);
     if app.magnifier {
         magnifier(app, ui, &boxes, out.inner_rect.min - out.state.offset, ppp);
     }
@@ -331,11 +337,13 @@ fn draw_pages(app: &mut App, ui: &mut Ui, boxes: &[PageBox], origin: Pos2, clip:
     let painter = ui.painter().clone();
     let dark = app.settings.dark_pdf;
     app.page_rects.clear();
-    let App { docs, active, tiles, sources, images, texts, search, sel, alpha, page_rects, .. } = app;
+    let sel_text = app.sel.text.clone().and_then(|ts| app.slot_text(ts.slot).map(|t| (ts, t)));
+    let live = if app.live_text_highlight { app.live_text_for_current() } else { None };
+    let App { docs, active, tiles, sources, images, search, sel, alpha, page_rects, proof, .. } = app;
     let doc = &docs[*active];
     let prefetch = viewport.expand2(vec2(0.0, viewport.height() * 1.5));
     let zoom = doc.zoom;
-    let mut dc = DrawCtx { tiles, sources, images, frames: &doc.model.frames, thumb: doc.thumb.as_ref(), doc_id: doc.id, dark: dark && doc.kind == Kind::Pdf, ppp };
+    let mut dc = DrawCtx { tiles, sources, images, frames: &doc.model.frames, thumb: doc.thumb.as_ref(), doc_id: doc.id, dark: dark && doc.kind == Kind::Pdf, ppp, proof: proof.as_deref() };
     for b in boxes {
         if !b.rect.intersects(prefetch) {
             continue;
@@ -355,7 +363,12 @@ fn draw_pages(app: &mut App, ui: &mut Ui, boxes: &[PageBox], origin: Pos2, clip:
         let pclip = painter.with_clip_rect(r.intersect(clip));
         // Search hits
         if search.doc == doc.id {
-            if let PageSrc::Pdf { index, .. } = slot.src {
+            let page_id = match slot.src {
+                PageSrc::Pdf { index, .. } => Some(index),
+                PageSrc::Image { frame } => Some(frame),
+                PageSrc::Blank => None,
+            };
+            if let Some(index) = page_id {
                 for (hi, hit) in search.hits.iter().enumerate().filter(|(_, h)| h.page == index) {
                     let current = search.current == Some(hi);
                     for hr in &hit.rects {
@@ -370,14 +383,19 @@ fn draw_pages(app: &mut App, ui: &mut Ui, boxes: &[PageBox], origin: Pos2, clip:
             }
         }
         // Text selection
-        if let Some(ts) = &sel.text {
+        if let Some((ts, t)) = &sel_text {
             if ts.doc == doc.id && ts.slot == b.idx {
-                if let PageSrc::Pdf { source, index } = slot.src {
-                    if let Some(t) = texts.get(&(source, index)) {
-                        for tr in t.rects(ts.a.min(ts.b), ts.a.max(ts.b)) {
-                            pclip.rect_filled(slot.rect_to_screen(r, tr).expand(1.0), 1.5, pal.accent.gamma_multiply(0.35));
-                        }
-                    }
+                for tr in t.rects(ts.a.min(ts.b), ts.a.max(ts.b)) {
+                    pclip.rect_filled(slot.rect_to_screen(r, tr).expand(1.0), 1.5, pal.accent.gamma_multiply(0.35));
+                }
+            }
+        }
+        // Live Text: outline every recognised line.
+        if let Some((slot_idx, t)) = &live {
+            if *slot_idx == b.idx {
+                for lr in &t.lines {
+                    let sr = slot.rect_to_screen(r, *lr).expand(3.0);
+                    pclip.rect(sr, 4.0, Color32::from_white_alpha(60), Stroke::new(1.5, pal.accent), StrokeKind::Outside);
                 }
             }
         }
@@ -439,7 +457,8 @@ fn interact(app: &mut App, ui: &mut Ui, resp: &egui::Response, boxes: &[PageBox]
                             }
                         }
                     } else if app.docs[app.active].kind == Kind::Image {
-                        c = CursorIcon::Crosshair;
+                        let on_text = app.slot_text(b.idx).map(|t| t.chars.iter().any(|ch| ch.rect.expand(2.0).contains(pp))).unwrap_or(false);
+                        c = if on_text { CursorIcon::Text } else { CursorIcon::Crosshair };
                     }
                     c
                 }
@@ -617,15 +636,16 @@ fn begin_drag(app: &mut App, b: PageBox, pp: Pos2, screen: Pos2, origin: Pos2, z
     let idx = b.idx;
     match app.tool {
         Tool::Text => {
-            if let PageSrc::Pdf { source, index } = slot.src {
-                if let Some(t) = app.page_text(source, index) {
-                    if !t.chars.is_empty() && t.lines.iter().any(|l| l.expand2(vec2(40.0, 6.0)).contains(pp)) {
-                        let i = t.nearest(pp).unwrap_or(0);
-                        let id = app.docs[app.active].id;
-                        app.sel.text = Some(TextSel { doc: id, slot: idx, a: i, b: i });
-                        app.sel.rect = None;
-                        return Drag::Text { slot: idx, anchor: i };
-                    }
+            let is_image = matches!(slot.src, PageSrc::Image { .. });
+            if let Some(t) = app.slot_text(idx) {
+                // On images, only start a text selection right on recognised text.
+                let reach = if is_image { vec2(4.0, 2.0) } else { vec2(40.0, 6.0) };
+                if !t.chars.is_empty() && t.lines.iter().any(|l| l.expand2(reach).contains(pp)) {
+                    let i = t.nearest(pp).unwrap_or(0);
+                    let id = app.docs[app.active].id;
+                    app.sel.text = Some(TextSel { doc: id, slot: idx, a: i, b: i });
+                    app.sel.rect = None;
+                    return Drag::Text { slot: idx, anchor: i };
                 }
             }
             app.sel.text = None;
@@ -638,13 +658,11 @@ fn begin_drag(app: &mut App, b: PageBox, pp: Pos2, screen: Pos2, origin: Pos2, z
         Tool::Sketch => Drag::Ink { slot: idx, pts: vec![pp] },
         Tool::Shape(t) => Drag::Shape { slot: idx, tool: t, start: pp, cur: pp },
         Tool::Markup(kind) => {
-            if let PageSrc::Pdf { source, index } = slot.src {
-                if let Some(t) = app.page_text(source, index) {
-                    let i = t.nearest(pp).unwrap_or(0);
-                    let id = app.docs[app.active].id;
-                    app.sel.text = Some(TextSel { doc: id, slot: idx, a: i, b: i });
-                    return Drag::Markup { slot: idx, kind, anchor: i };
-                }
+            if let Some(t) = app.slot_text(idx) {
+                let i = t.nearest(pp).unwrap_or(0);
+                let id = app.docs[app.active].id;
+                app.sel.text = Some(TextSel { doc: id, slot: idx, a: i, b: i });
+                return Drag::Markup { slot: idx, kind, anchor: i };
             }
             Drag::None
         }
@@ -702,11 +720,9 @@ fn update_drag(app: &mut App, boxes: &[PageBox], origin: Pos2, p: Pos2, zoom: f3
     match &mut app.drag {
         Drag::Text { anchor, .. } | Drag::Markup { anchor, .. } => {
             let a = *anchor;
-            if let PageSrc::Pdf { source, index } = slot.src {
-                if let Some(t) = app.page_text(source, index) {
-                    let i = t.nearest(pp).unwrap_or(a);
-                    app.sel.text = Some(TextSel { doc: doc_id, slot: slot_idx, a, b: i });
-                }
+            if let Some(t) = app.slot_text(slot_idx) {
+                let i = t.nearest(pp).unwrap_or(a);
+                app.sel.text = Some(TextSel { doc: doc_id, slot: slot_idx, a, b: i });
             }
         }
         Drag::Marquee { start, .. } | Drag::Redact { start, .. } => {
@@ -1011,16 +1027,14 @@ fn click(app: &mut App, slot_idx: usize, pp: Pos2, double: bool, triple: bool, d
 
     // Word / line selection.
     if (double || triple) && matches!(app.tool, Tool::Text | Tool::Markup(_)) {
-        if let PageSrc::Pdf { source, index } = slot.src {
-            if let Some(t) = app.page_text(source, index) {
-                if let Some(i) = t.chars.iter().position(|c| c.rect.expand(1.0).contains(pp)) {
-                    let (a, b) = if triple { t.line_at(i) } else { t.word_at(i) };
-                    app.sel.text = Some(TextSel { doc: doc_id, slot: slot_idx, a, b });
-                    if let Tool::Markup(k) = app.tool {
-                        app.apply_markup_to_selection(k);
-                    }
-                    return;
+        if let Some(t) = app.slot_text(slot_idx) {
+            if let Some(i) = t.chars.iter().position(|c| c.rect.expand(1.0).contains(pp)) {
+                let (a, b) = if triple { t.line_at(i) } else { t.word_at(i) };
+                app.sel.text = Some(TextSel { doc: doc_id, slot: slot_idx, a, b });
+                if let Tool::Markup(k) = app.tool {
+                    app.apply_markup_to_selection(k);
                 }
+                return;
             }
         }
     }
@@ -1369,6 +1383,67 @@ fn field_editor(app: &mut App, ui: &mut Ui, f: &crate::pdf::FieldInfo, r: Rect, 
     }
 }
 
+/// Play/pause for animated GIFs, advancing frames on their own delays.
+fn animation_controls(app: &mut App, ui: &mut Ui, canvas: Rect) {
+    let Some(d) = app.docs.get_mut(app.active) else { return };
+    if !d.is_animated() || !d.ready() {
+        return;
+    }
+    let n = d.page_count();
+    if let Some(due) = d.playing {
+        let now = Instant::now();
+        if now >= due {
+            d.current = (d.current + 1) % n;
+            let delay = d.image.as_ref().and_then(|m| m.delays.get(d.current).copied()).unwrap_or(100);
+            d.playing = Some(now + Duration::from_millis(delay as u64));
+        }
+        let wait = d.playing.unwrap().saturating_duration_since(now);
+        ui.ctx().request_repaint_after(wait);
+    }
+    let pal = Palette::of(ui.ctx());
+    let r = Rect::from_center_size(pos2(canvas.center().x, canvas.max.y - 34.0), vec2(150.0, 34.0));
+    let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("gif-controls")));
+    painter.rect_filled(r, 17.0, Color32::from_black_alpha(150));
+    let icon = if d.playing.is_some() { egui_phosphor::regular::PAUSE } else { egui_phosphor::regular::PLAY };
+    let br = Rect::from_center_size(r.left_center() + vec2(22.0, 0.0), vec2(28.0, 28.0));
+    painter.text(br.center(), Align2::CENTER_CENTER, icon, FontId::proportional(16.0), Color32::WHITE);
+    painter.text(r.center() + vec2(14.0, 0.0), Align2::CENTER_CENTER, format!("{} / {n}", d.current + 1), FontId::proportional(12.5), Color32::WHITE);
+    let _ = pal;
+    let resp = ui.interact(r, egui::Id::new("gif-play"), Sense::click());
+    if resp.clicked() {
+        d.playing = if d.playing.is_some() { None } else { Some(Instant::now()) };
+    }
+}
+
+/// Preview's Live Text button: appears when text was recognised on the current page and
+/// outlines everything that can be selected, copied or searched.
+fn live_text_button(app: &mut App, ui: &mut Ui, canvas: Rect) {
+    // Asking for the current page's text also starts recognition when it is needed.
+    if let Some(cur) = app.doc().map(|d| d.current) {
+        let _ = app.slot_text(cur);
+    }
+    if app.live_text_for_current().is_none() {
+        return;
+    }
+    let pal = Palette::of(ui.ctx());
+    let on = app.live_text_highlight;
+    let r = Rect::from_min_size(canvas.max - vec2(132.0, 50.0), vec2(116.0, 34.0));
+    let resp = ui.interact(r, egui::Id::new("live-text"), Sense::click());
+    let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("live-text-btn")));
+    painter.add(egui::epaint::Shadow { offset: [0, 3], blur: 10, spread: 0, color: Color32::from_black_alpha(50) }.as_shape(r, 17.0));
+    let fill = if on { pal.accent } else if pal.dark { Color32::from_rgb(0x3A, 0x3A, 0x3E) } else { Color32::WHITE };
+    painter.rect(r, 17.0, fill, Stroke::new(1.0, pal.separator), StrokeKind::Inside);
+    let fg = if on { Color32::WHITE } else { pal.text };
+    painter.text(r.left_center() + vec2(18.0, 0.0), Align2::CENTER_CENTER, egui_phosphor::regular::SCAN, FontId::proportional(16.0), fg);
+    painter.text(r.left_center() + vec2(34.0, 0.0), Align2::LEFT_CENTER, "Live Text", FontId::proportional(13.0), fg);
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+    }
+    if resp.on_hover_text("Show all recognised text — select, copy or search it").clicked() {
+        app.live_text_highlight = !app.live_text_highlight;
+    }
+}
+
 fn page_badge(app: &App, ui: &Ui, canvas: Rect) {
     let Some(until) = app.page_badge_until else { return };
     let now = Instant::now();
@@ -1403,10 +1478,10 @@ fn magnifier(app: &mut App, ui: &mut Ui, boxes: &[PageBox], origin: Pos2, ppp: f
     let pal = Palette::of(&ctx);
     painter.add(egui::epaint::Shadow { offset: [0, 6], blur: 20, spread: 0, color: Color32::from_black_alpha(90) }.as_shape(lens, 18.0));
     painter.rect_filled(lens, 18.0, pal.canvas);
-    let App { docs, active, tiles, sources, images, .. } = app;
+    let App { docs, active, tiles, sources, images, proof, .. } = app;
     let doc = &docs[*active];
     let slot = &doc.model.slots[b.idx];
-    let mut dc = DrawCtx { tiles, sources, images, frames: &doc.model.frames, thumb: doc.thumb.as_ref(), doc_id: doc.id, dark: app.settings.dark_pdf && doc.kind == Kind::Pdf, ppp };
+    let mut dc = DrawCtx { tiles, sources, images, frames: &doc.model.frames, thumb: doc.thumb.as_ref(), doc_id: doc.id, dark: app.settings.dark_pdf && doc.kind == Kind::Pdf, ppp, proof: proof.as_deref() };
     let inner = lens.shrink(3.0);
     draw_slot(&mut dc, &painter, slot, zdst, inner, false);
     let pclip = painter.with_clip_rect(inner);
@@ -1508,14 +1583,14 @@ fn contact_sheet(app: &mut App, ui: &mut Ui) {
                         break;
                     }
                     let (r, resp) = ui.allocate_exact_size(vec2(cell, cell + 28.0), Sense::click());
-                    let App { docs, active, tiles, sources, images, settings, .. } = app;
+                    let App { docs, active, tiles, sources, images, settings, proof, .. } = app;
                     let doc = &docs[*active];
                     let slot = &doc.model.slots[i];
                     let ds = slot.display_size();
                     let s = (cell / ds.x).min(cell / ds.y);
                     let pr = Rect::from_center_size(pos2(r.center().x, r.min.y + cell / 2.0 + 4.0), ds * s * 0.94);
                     page_shadow(ui.painter(), pr, pal.page_shadow);
-                    let mut dc = DrawCtx { tiles, sources, images, frames: &doc.model.frames, thumb: doc.thumb.as_ref(), doc_id: doc.id, dark: settings.dark_pdf && doc.kind == Kind::Pdf, ppp };
+                    let mut dc = DrawCtx { tiles, sources, images, frames: &doc.model.frames, thumb: doc.thumb.as_ref(), doc_id: doc.id, dark: settings.dark_pdf && doc.kind == Kind::Pdf, ppp, proof: proof.as_deref() };
                     draw_slot(&mut dc, ui.painter(), slot, pr, ui.clip_rect(), true);
                     if doc.current == i {
                         ui.painter().rect_stroke(pr.expand(3.0), 4.0, Stroke::new(2.5, pal.accent), StrokeKind::Outside);
@@ -1577,13 +1652,13 @@ pub fn slideshow(app: &mut App, ui: &mut Ui) {
     let show_controls = ss.last_move.elapsed() < Duration::from_secs(2);
     let ppp = ctx.pixels_per_point();
     {
-        let App { docs, active, tiles, sources, images, settings, .. } = app;
+        let App { docs, active, tiles, sources, images, settings, proof, .. } = app;
         let doc = &docs[*active];
         let slot = &doc.model.slots[page];
         let ds = slot.display_size();
         let s = (r.width() / ds.x).min(r.height() / ds.y);
         let pr = Rect::from_center_size(r.center(), ds * s);
-        let mut dc = DrawCtx { tiles, sources, images, frames: &doc.model.frames, thumb: doc.thumb.as_ref(), doc_id: doc.id, dark: settings.dark_pdf && doc.kind == Kind::Pdf, ppp };
+        let mut dc = DrawCtx { tiles, sources, images, frames: &doc.model.frames, thumb: doc.thumb.as_ref(), doc_id: doc.id, dark: settings.dark_pdf && doc.kind == Kind::Pdf, ppp, proof: proof.as_deref() };
         draw_slot(&mut dc, ui.painter(), slot, pr, r, false);
         for a in &slot.annots {
             annots::paint(ui.painter(), slot, pr, s, a);

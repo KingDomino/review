@@ -16,6 +16,7 @@ use crate::settings::PdfViewMode;
 pub enum Kind {
     Pdf,
     Image,
+    Model,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -43,10 +44,11 @@ pub struct ImageMeta {
     pub exif: Vec<(String, String)>,
     pub gps: Option<(f64, f64)>,
     pub dpi: f32,
-    #[allow(dead_code)]
+    /// Per-frame delays (ms) of animated images.
     pub delays: Vec<u32>,
     pub has_alpha: bool,
     pub color_model: String,
+    pub icc_name: Option<String>,
 }
 
 pub struct Document {
@@ -83,6 +85,10 @@ pub struct Document {
     /// Small preview of the first frame (images), kept while unloaded.
     pub thumb: Option<Arc<RgbaImage>>,
     pub last_active: std::time::Instant,
+    /// Animated GIF playback: next frame time while playing.
+    pub playing: Option<std::time::Instant>,
+    /// 3D documents: the loaded scene.
+    pub scene: Option<Arc<crate::model3d::Scene>>,
 }
 
 impl Document {
@@ -122,11 +128,17 @@ impl Document {
             reload_after_save: None,
             thumb: None,
             last_active: std::time::Instant::now(),
+            playing: None,
+            scene: None,
         }
     }
 
     pub fn ready(&self) -> bool {
         self.state == LoadState::Ready
+    }
+
+    pub fn is_animated(&self) -> bool {
+        self.image.as_ref().map(|m| m.delays.len() > 1).unwrap_or(false) && self.page_count() > 1
     }
 
     /// Bytes of decoded pixels held by this document.
@@ -149,6 +161,10 @@ impl Document {
     /// Display name with page label, e.g. "report.pdf — Page 3 of 12".
     pub fn subtitle(&self, logical: bool) -> String {
         match self.kind {
+            Kind::Model => match &self.scene {
+                Some(s) => format!("{} · {} triangles", s.format, group_digits(s.triangles())),
+                None => String::new(),
+            },
             Kind::Image => {
                 let Some(f) = self.model.frames.first() else { return String::new() };
                 if self.page_count() > 1 {
@@ -231,6 +247,7 @@ impl Document {
                     delays: l.delays,
                     has_alpha: l.has_alpha,
                     color_model: l.color_model,
+                    icc_name: l.icc_name,
                 });
                 self.undo.clear();
                 self.redo.clear();
@@ -238,6 +255,11 @@ impl Document {
                 self.state = LoadState::Ready;
                 if !keep_view {
                     self.fit = Fit::Auto;
+                }
+                // Animated GIFs play in single-frame view; frames stay browsable in the sidebar.
+                if self.is_animated() && !keep_view {
+                    self.mode = PdfViewMode::Single;
+                    self.playing = Some(std::time::Instant::now());
                 }
             }
             Err(e) => self.state = LoadState::Failed(e),
@@ -448,6 +470,18 @@ impl Document {
             }
         }
     }
+}
+
+pub fn group_digits(n: usize) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// Human friendly byte size.

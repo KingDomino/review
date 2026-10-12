@@ -3,6 +3,7 @@
 mod annots;
 mod app;
 mod canvas;
+mod color;
 mod dialogs;
 mod document;
 mod heif;
@@ -10,12 +11,16 @@ mod imaging;
 mod inspector;
 mod layout;
 mod model;
+mod model3d;
+mod ocr;
 mod pdf;
 mod platform;
 mod render;
+mod scanner;
 mod settings;
 mod sidebar;
 mod theme;
+mod view3d;
 #[cfg(test)]
 mod ui_tests;
 

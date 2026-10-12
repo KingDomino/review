@@ -7,6 +7,7 @@ use std::sync::Arc;
 use egui::{pos2, Color32, Mesh, Painter, Rect, TextureHandle, TextureOptions};
 use image::RgbaImage;
 
+use crate::color::Proof;
 use crate::model::{PageSrc, Slot};
 use crate::pdf::{Source, TileKey, TILE};
 
@@ -43,11 +44,27 @@ pub struct Tiles {
     inflight: HashMap<TileKey, Arc<AtomicBool>>,
     wanted: HashSet<TileKey>,
     frame: u64,
+    /// Active soft proof; applied to tiles as they arrive.
+    proof: Option<Arc<Proof>>,
 }
 
 impl Tiles {
-    pub fn insert(&mut self, ctx: &egui::Context, key: TileKey, image: egui::ColorImage) {
+    /// Switch soft proofing on/off; cached tiles are re-rendered.
+    pub fn set_proof(&mut self, proof: Option<Arc<Proof>>) {
+        self.proof = proof;
+        self.map.clear();
+        for c in self.inflight.values() {
+            c.store(true, Ordering::Relaxed);
+        }
+        self.inflight.clear();
+    }
+
+    pub fn insert(&mut self, ctx: &egui::Context, key: TileKey, mut image: egui::ColorImage) {
         self.inflight.remove(&key);
+        if let Some(p) = &self.proof {
+            let bytes: &mut [u8] = bytemuck::cast_slice_mut(&mut image.pixels);
+            p.apply_rgba(bytes);
+        }
         let tex = ctx.load_texture(format!("tile-{key:?}"), image, TextureOptions::LINEAR);
         self.map.insert(key, TileEntry { tex, used: self.frame });
     }
@@ -123,6 +140,7 @@ impl Tiles {
 /// GPU textures for one image frame, split into tiles that fit any GPU.
 pub struct ImageTex {
     image: Arc<RgbaImage>,
+    proof_gen: u64,
     tiles: Vec<(Rect, TextureHandle)>,
     thumb: TextureHandle,
 }
@@ -130,7 +148,12 @@ pub struct ImageTex {
 const IMG_TILE: u32 = 2048;
 
 impl ImageTex {
-    pub fn new(ctx: &egui::Context, image: Arc<RgbaImage>) -> Self {
+    pub fn new(ctx: &egui::Context, original: Arc<RgbaImage>, proof: Option<&Proof>) -> Self {
+        let proof_gen = proof.map(|p| p.generation).unwrap_or(0);
+        let image = match proof {
+            Some(p) => Arc::new(p.apply(&original)),
+            None => original.clone(),
+        };
         let opts = TextureOptions {
             magnification: egui::TextureFilter::Linear,
             minification: egui::TextureFilter::Linear,
@@ -156,11 +179,11 @@ impl ImageTex {
         let small = image::imageops::thumbnail(&*image, 320.min(w).max(1), ((320.min(w) as f32 / w as f32) * h as f32).max(1.0) as u32);
         let ci = egui::ColorImage::from_rgba_unmultiplied([small.width() as usize, small.height() as usize], small.as_raw());
         let thumb = ctx.load_texture("img-thumb", ci, TextureOptions::LINEAR);
-        Self { image, tiles, thumb }
+        Self { image: original, proof_gen, tiles, thumb }
     }
 
-    pub fn is_for(&self, image: &Arc<RgbaImage>) -> bool {
-        Arc::ptr_eq(&self.image, image)
+    pub fn is_for(&self, image: &Arc<RgbaImage>, proof: Option<&Proof>) -> bool {
+        Arc::ptr_eq(&self.image, image) && self.proof_gen == proof.map(|p| p.generation).unwrap_or(0)
     }
 }
 
@@ -195,6 +218,7 @@ pub struct DrawCtx<'a> {
     pub doc_id: u64,
     pub dark: bool,
     pub ppp: f32,
+    pub proof: Option<&'a Proof>,
 }
 
 /// Paint the pixels of `slot` into `dst` (screen rect of the visible page), clipped to `clip`.
@@ -215,9 +239,9 @@ pub fn draw_slot(dc: &mut DrawCtx, painter: &Painter, slot: &Slot, dst: Rect, cl
                 },
             };
             let thumb = thumb || key.1 == usize::MAX;
-            let stale = dc.images.get(&key).map(|t| !t.is_for(img)).unwrap_or(true);
+            let stale = dc.images.get(&key).map(|t| !t.is_for(img, dc.proof)).unwrap_or(true);
             if stale {
-                dc.images.insert(key, ImageTex::new(painter.ctx(), img.clone()));
+                dc.images.insert(key, ImageTex::new(painter.ctx(), img.clone(), dc.proof));
             }
             let tex = &dc.images[&key];
             let zoom = dst.width() / slot.display_size().x.max(1.0);

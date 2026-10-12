@@ -10,7 +10,7 @@ Terminal=false
 StartupNotify=true
 StartupWMClass=review
 Categories=Graphics;Viewer;Office;
-Keywords=pdf;preview;image;photo;annotate;sign;markup;viewer;
+Keywords=pdf;preview;image;photo;raw;3d;ocr;annotate;sign;markup;viewer;
 MimeType=@MIME@
 Actions=new-window;
 

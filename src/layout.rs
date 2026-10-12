@@ -32,7 +32,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
             .show_separator_line(true)
             .show(ui, |ui| toolbar(app, ui));
     }
-    let ready = app.doc().map(|d| d.ready()).unwrap_or(false);
+    let ready = app.doc().map(|d| d.ready() && d.kind != Kind::Model).unwrap_or(false);
     if app.show_markup && ready {
         egui::Panel::top("markup")
             .frame(Frame::new().fill(pal.sidebar).inner_margin(Margin::symmetric(10, 4)))
@@ -120,6 +120,7 @@ fn menubar(app: &mut App, ui: &mut Ui) {
             ui.separator();
             item(app, ui, "Edit Permissions…", Action::EditPermissions);
             ui.separator();
+            item(app, ui, "Import from Scanner…", Action::ImportScanner);
             ui.menu_button("Take Screenshot", |ui| {
                 item(app, ui, "From Selection…", Action::Screenshot(0));
                 item(app, ui, "From Window…", Action::Screenshot(1));
@@ -150,6 +151,7 @@ fn menubar(app: &mut App, ui: &mut Ui) {
             item(app, ui, "Invert Selection", Action::InvertSelection);
             ui.separator();
             ui.menu_button("Insert", |ui| {
+                item(app, ui, "Page from Scanner…", Action::InsertFromScanner);
                 item(app, ui, "Page from File…", Action::InsertFromFile);
                 item(app, ui, "Blank Page", Action::InsertBlank);
             });
@@ -175,6 +177,19 @@ fn menubar(app: &mut App, ui: &mut Ui) {
             check(app, ui, "Single Page", mode == PdfViewMode::Single, Action::ViewMode(PdfViewMode::Single));
             check(app, ui, "Two Pages", mode == PdfViewMode::Two, Action::ViewMode(PdfViewMode::Two));
             ui.separator();
+            ui.menu_button("Soft Proof with Profile", |ui| {
+                ui.set_min_width(260.0);
+                let none = app.proof.is_none();
+                if ui.button(format!("{}None", if none { "✓  " } else { "     " })).clicked() {
+                    app.set_proof(None);
+                    ui.close();
+                }
+                ui.separator();
+                let current = app.proof.as_ref().map(|p| p.name.clone());
+                if let Some(p) = profile_list(ui, false, current.as_deref()) {
+                    app.set_proof(Some(&p));
+                }
+            });
             check(app, ui, "Use Dark Appearance for PDF", app.settings.dark_pdf, Action::DarkPdf);
             check(app, ui, "Highlight Form Fields", app.highlight_fields, Action::HighlightFields);
             ui.separator();
@@ -246,6 +261,15 @@ fn menubar(app: &mut App, ui: &mut Ui) {
             item(app, ui, "Crop", Action::Crop);
             item(app, ui, "Remove Background", Action::RemoveBackground);
             ui.separator();
+            let is_img = app.doc().map(|d| d.kind == Kind::Image && d.ready()).unwrap_or(false);
+            ui.add_enabled_ui(is_img, |ui| {
+                ui.menu_button("Assign Profile", |ui| {
+                    ui.set_min_width(260.0);
+                    if let Some(p) = profile_list(ui, true, None) {
+                        app.assign_profile(&p);
+                    }
+                });
+            });
             item(app, ui, "Show Location Info", Action::ShowLocation);
         });
         ui.menu_button("Window", |ui| {
@@ -269,6 +293,36 @@ fn menubar(app: &mut App, ui: &mut Ui) {
             }
         });
     });
+}
+
+/// Menu entries for the ICC profiles installed on the system (RGB first, then CMYK).
+/// Returns the profile the user picked.
+fn profile_list(ui: &mut Ui, rgb_only: bool, current: Option<&str>) -> Option<crate::color::IccProfile> {
+    let profiles = crate::color::system_profiles();
+    if profiles.is_empty() {
+        ui.add_enabled(false, egui::Button::new("No ICC profiles found (install colord)"));
+        return None;
+    }
+    let mut picked = None;
+    let mut last_cmyk = false;
+    egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+        for p in profiles {
+            if rgb_only && p.cmyk {
+                continue;
+            }
+            if p.cmyk && !last_cmyk {
+                ui.separator();
+                ui.label(RichText::new("CMYK / print").small().color(ui.visuals().weak_text_color()));
+            }
+            last_cmyk = p.cmyk;
+            let on = current == Some(p.name.as_str());
+            if ui.button(format!("{}{}", if on { "✓  " } else { "     " }, p.name)).clicked() {
+                picked = Some(p.clone());
+                ui.close();
+            }
+        }
+    });
+    picked
 }
 
 fn view_menu_items(app: &mut App, ui: &mut Ui) {
@@ -369,7 +423,13 @@ fn toolbar(app: &mut App, ui: &mut Ui) {
 
         // Title block
         let (name, sub, dirty, id) = match app.doc() {
-            Some(d) => (d.name.clone(), d.subtitle(app.settings.logical_page_numbers), d.dirty(), d.id),
+            Some(d) => {
+                let mut sub = d.subtitle(app.settings.logical_page_numbers);
+                if let Some(p) = &app.proof {
+                    sub = format!("{sub} · Proof: {}", p.name);
+                }
+                (d.name.clone(), sub, d.dirty(), d.id)
+            }
             None => ("Review".to_string(), String::new(), false, 0),
         };
         ui.vertical(|ui| {
@@ -462,10 +522,11 @@ fn toolbar(app: &mut App, ui: &mut Ui) {
                     app.set_tool(Tool::Markup(kind));
                 }
             }
-            if tool_button(ui, ph::ARROW_COUNTER_CLOCKWISE, "Rotate Left (Ctrl+L)", false, ready).clicked() {
+            let editable = ready && app.doc().map(|d| d.kind != Kind::Model).unwrap_or(false);
+            if tool_button(ui, ph::ARROW_COUNTER_CLOCKWISE, "Rotate Left (Ctrl+L)", false, editable).clicked() {
                 app.run(Action::RotateLeft);
             }
-            if tool_button(ui, ph::PEN_NIB, "Show Markup Toolbar (Ctrl+Shift+A)", app.show_markup, ready).clicked() {
+            if tool_button(ui, ph::PEN_NIB, "Show Markup Toolbar (Ctrl+Shift+A)", app.show_markup, editable).clicked() {
                 app.run(Action::ToggleMarkup);
             }
             ui.add_space(6.0);

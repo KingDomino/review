@@ -4,6 +4,7 @@
 #   ./install.sh              install (uses the prebuilt binary in dist/ when it matches this machine)
 #   ./install.sh --build      always build from source
 #   ./install.sh --default    ...and make Review the default app for PDFs and images
+#   ./install.sh --no-ocr     don't install Tesseract for Live Text
 #   ./install.sh --uninstall  remove Review (your settings in ~/.config/review are kept)
 set -euo pipefail
 
@@ -19,12 +20,14 @@ MIN_RUST_MINOR=95
 FORCE_BUILD=0
 SET_DEFAULT=0
 UNINSTALL=0
+OCR=1
 for arg in "$@"; do
   case "$arg" in
     --build) FORCE_BUILD=1 ;;
     --default) SET_DEFAULT=1 ;;
     --uninstall) UNINSTALL=1 ;;
-    -h|--help) sed -n '2,8p' "$0"; exit 0 ;;
+    --no-ocr) OCR=0 ;;
+    -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
     *) echo "Unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -166,7 +169,19 @@ if [ "$SET_DEFAULT" = 1 ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 3. Optional runtime helpers.
+# 3. Live Text (on-device text recognition) uses Tesseract.
+if [ "$OCR" = 1 ] && ! have tesseract; then
+  if have dnf; then
+    say "Installing Tesseract for Live Text (skip with --no-ocr)"
+    sudo dnf install -y tesseract tesseract-langpack-eng || warn "Couldn't install Tesseract; Live Text stays off."
+  elif have apt-get; then
+    say "Installing Tesseract for Live Text (skip with --no-ocr)"
+    sudo apt-get install -y tesseract-ocr || warn "Couldn't install Tesseract; Live Text stays off."
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 4. Optional runtime helpers.
 hint() { printf '    %-38s %s\n' "$1" "$2"; }
 echo
 say "Optional extras:"
@@ -175,6 +190,9 @@ if ! ls /usr/lib64/libheif.so.1 /usr/lib/libheif.so.1 /usr/lib/*/libheif.so.1 >/
 else
   hint "HEIC/AVIF photos" "ok (iPhone HEVC photos may also need libheif-freeworld from RPM Fusion)"
 fi
+have tesseract || hint "Live Text" "sudo dnf install tesseract tesseract-langpack-eng"
+have scanimage || hint "Import from Scanner" "sudo dnf install sane-backends sane-frontends"
+[ -d /usr/share/color/icc ] || hint "Soft Proof / Assign Profile" "sudo dnf install colord (ICC profiles)"
 have lp || hint "Printing" "sudo dnf install cups-client"
 have spectacle || have gnome-screenshot || have grim || hint "File ▸ Take Screenshot" "sudo dnf install spectacle"
 have spd-say || hint "Edit ▸ Speech" "sudo dnf install speech-dispatcher-utils"

@@ -21,6 +21,8 @@ pub struct Loaded {
     pub color_model: String,
     /// Small preview kept when the full pixels are unloaded to save memory.
     pub thumb: Option<Arc<RgbaImage>>,
+    /// Name of the embedded colour profile, if any.
+    pub icc_name: Option<String>,
 }
 
 pub fn make_thumb(img: &RgbaImage) -> RgbaImage {
@@ -33,7 +35,15 @@ pub fn make_thumb(img: &RgbaImage) -> RgbaImage {
 pub const IMAGE_EXTS: &[&str] = &[
     "png", "jpg", "jpeg", "jpe", "jfif", "gif", "webp", "tif", "tiff", "bmp", "dib", "ico", "cur", "tga", "pnm",
     "pbm", "pgm", "ppm", "pam", "dds", "hdr", "exr", "qoi", "heic", "heif", "hif", "avif", "jp2", "j2k", "jpx",
-    "jpf", "psd", "jxr", "wdp",
+    "jpf", "psd", "jxr", "wdp", "jxl",
+    // Camera RAW
+    "dng", "cr2", "cr3", "crw", "nef", "nrw", "arw", "srf", "sr2", "orf", "rw2", "raf", "pef", "srw", "erf", "kdc",
+    "dcr", "dcs", "mrw", "3fr", "iiq", "mef", "mos", "rwl", "ari",
+];
+
+pub const RAW_EXTS: &[&str] = &[
+    "dng", "cr2", "cr3", "crw", "nef", "nrw", "arw", "srf", "sr2", "orf", "rw2", "raf", "pef", "srw", "erf", "kdc",
+    "dcr", "dcs", "mrw", "3fr", "iiq", "mef", "mos", "rwl", "ari",
 ];
 
 pub fn is_image_path(p: &Path) -> bool {
@@ -70,10 +80,17 @@ fn decode(bytes: &[u8], ext: &str) -> Result<Loaded, String> {
         has_alpha: false,
         color_model: "RGB".into(),
         thumb: None,
+        icc_name: None,
     };
 
     if matches!(ext, "heic" | "heif" | "hif" | "avif") || is_heif(bytes) {
         return decode_heif(bytes, out);
+    }
+    if RAW_EXTS.contains(&ext) {
+        return decode_raw(bytes, ext, out);
+    }
+    if ext == "jxl" || bytes.starts_with(&[0xFF, 0x0A]) || bytes.starts_with(b"\0\0\0\x0CJXL ") {
+        return decode_jxl(bytes, out);
     }
 
     match guessed {
@@ -95,10 +112,19 @@ fn decode(bytes: &[u8], ext: &str) -> Result<Loaded, String> {
             out.format = "TIFF image".into();
         }
         Some(fmt) => {
-            let img = image::load_from_memory_with_format(bytes, fmt).map_err(|e| e.to_string())?;
+            use image::ImageDecoder;
+            let mut dec = image::ImageReader::with_format(Cursor::new(bytes), fmt).into_decoder().map_err(|e| e.to_string())?;
+            let icc = dec.icc_profile().ok().flatten();
+            let img = DynamicImage::from_decoder(dec).map_err(|e| e.to_string())?;
             out.has_alpha = img.color().has_alpha();
             out.color_model = color_model(&img);
-            out.frames.push(Arc::new(img.to_rgba8()));
+            let mut rgba = img.to_rgba8();
+            // Colour-manage photos with an embedded profile (e.g. Display P3 from phones).
+            if let Some(icc) = icc {
+                out.icc_name = crate::color::profile_name(&icc);
+                crate::color::to_srgb(&mut rgba, &icc);
+            }
+            out.frames.push(Arc::new(rgba));
             out.format = format!("{} image", format_name(fmt));
             out.dpi = read_dpi(bytes, fmt).unwrap_or(72.0);
         }
@@ -117,6 +143,29 @@ fn decode(bytes: &[u8], ext: &str) -> Result<Loaded, String> {
     if out.frames.is_empty() {
         return Err("The image contains no frames".into());
     }
+    Ok(out)
+}
+
+fn decode_raw(bytes: &[u8], ext: &str, mut out: Loaded) -> Result<Loaded, String> {
+    use rawler::decoders::RawDecodeParams;
+    use rawler::imgop::develop::RawDevelop;
+    let src = rawler::rawsource::RawSource::new_from_slice(bytes);
+    let raw = rawler::decode(&src, &RawDecodeParams::default()).map_err(|e| format!("Can't read this RAW file: {e}"))?;
+    let dev = RawDevelop::default().develop_intermediate(&raw).map_err(|e| e.to_string())?;
+    let img = dev.to_dynamic_image().ok_or("RAW development failed")?;
+    out.frames.push(Arc::new(img.to_rgba8()));
+    out.format = format!("{} camera RAW ({} {})", ext.to_uppercase(), raw.clean_make, raw.clean_model);
+    out.color_model = "RGB (developed RAW)".into();
+    Ok(out)
+}
+
+fn decode_jxl(bytes: &[u8], mut out: Loaded) -> Result<Loaded, String> {
+    let dec = jxl_oxide::integration::JxlDecoder::new(Cursor::new(bytes)).map_err(|e| e.to_string())?;
+    let img = DynamicImage::from_decoder(dec).map_err(|e| e.to_string())?;
+    out.has_alpha = img.color().has_alpha();
+    out.color_model = color_model(&img);
+    out.frames.push(Arc::new(img.to_rgba8()));
+    out.format = "JPEG XL image".into();
     Ok(out)
 }
 
@@ -906,5 +955,20 @@ mod tests {
         );
         let out = burn_annotations(&img, &[a, t], font);
         assert_ne!(out.get_pixel(2, 7), img.get_pixel(2, 7));
+    }
+}
+
+#[cfg(test)]
+mod sample_tests {
+    /// Decode real files when provided, e.g. REVIEW_SAMPLE_IMAGES=a.dng:b.jxl
+    #[test]
+    fn decodes_sample_files() {
+        let Ok(list) = std::env::var("REVIEW_SAMPLE_IMAGES") else { return };
+        for p in list.split(':').filter(|p| !p.is_empty()) {
+            let l = super::load(std::path::Path::new(p)).unwrap_or_else(|e| panic!("{p}: {e}"));
+            let f = &l.frames[0];
+            assert!(f.width() > 10 && f.height() > 10, "{p}");
+            eprintln!("{p}: {} {}x{}", l.format, f.width(), f.height());
+        }
     }
 }

@@ -49,6 +49,8 @@ pub struct Settings {
     pub signatures: Vec<Signature>,
     pub export_quality: u8,
     pub live_thumbnails: bool,
+    /// Live Text: recognise text in photos and scanned pages.
+    pub live_text: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -76,6 +78,7 @@ impl Default for Settings {
             signatures: Vec::new(),
             export_quality: 85,
             live_thumbnails: true,
+            live_text: true,
         }
     }
 }

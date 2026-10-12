@@ -60,6 +60,16 @@ fn info(app: &mut App, ui: &mut Ui) {
     row(ui, "Created:", fmt_time(doc.created));
     row(ui, "Modified:", fmt_time(doc.modified));
     match doc.kind {
+        Kind::Model => {
+            let Some(s) = doc.scene.clone() else { return };
+            row(ui, "Document type:", s.format.clone());
+            row(ui, "Meshes:", s.meshes.len().to_string());
+            row(ui, "Triangles:", crate::document::group_digits(s.triangles()));
+            row(ui, "Vertices:", crate::document::group_digits(s.vertices()));
+            row(ui, "Textures:", s.textures.len().to_string());
+            let d = [s.max[0] - s.min[0], s.max[1] - s.min[1], s.max[2] - s.min[2]];
+            row(ui, "Size:", format!("{:.3} × {:.3} × {:.3}", d[0], d[1], d[2]));
+        }
         Kind::Pdf => {
             let Some(info) = doc.info.clone() else { return };
             row(ui, "Document type:", if info.meta.format.is_empty() { "PDF document".into() } else { info.meta.format.clone() });
@@ -86,6 +96,7 @@ fn info(app: &mut App, ui: &mut Ui) {
                 row(ui, "Print size:", format!("{:.1} × {:.1} cm", f.width() as f32 / meta.dpi * 2.54, f.height() as f32 / meta.dpi * 2.54));
             }
             row(ui, "Colour model:", meta.color_model.clone());
+            row(ui, "ColorSync profile:", meta.icc_name.clone().unwrap_or_else(|| "sRGB (assumed)".into()));
             row(ui, "Alpha channel:", if meta.has_alpha { "Yes" } else { "No" });
             if doc.page_count() > 1 {
                 row(ui, "Frames:", doc.page_count().to_string());
@@ -107,6 +118,9 @@ fn details(app: &mut App, ui: &mut Ui) {
     let pal = Palette::of(ui.ctx());
     let Some(doc) = app.docs.get_mut(app.active) else { return };
     match doc.kind {
+        Kind::Model => {
+            ui.label(RichText::new("No additional information for 3D models.").color(pal.text_weak));
+        }
         Kind::Image => {
             let exif = doc.image.as_ref().map(|i| i.exif.clone()).unwrap_or_default();
             heading(ui, "EXIF");
@@ -229,8 +243,8 @@ fn security(app: &mut App, ui: &mut Ui) {
     let Some(doc) = app.doc() else { return };
     heading(ui, "Encryption");
     match doc.kind {
-        Kind::Image => {
-            ui.label(RichText::new("Images aren’t encrypted.").color(pal.text_weak));
+        Kind::Image | Kind::Model => {
+            ui.label(RichText::new("This file isn’t encrypted.").color(pal.text_weak));
         }
         Kind::Pdf => {
             let Some(info) = doc.info.clone() else { return };

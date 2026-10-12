@@ -62,6 +62,16 @@ pub struct PrintState {
     pub busy: bool,
 }
 
+pub struct ScanState {
+    pub devices: Option<Result<Vec<crate::scanner::Device>, String>>,
+    rx: Receiver<Result<Vec<crate::scanner::Device>, String>>,
+    pub device: usize,
+    pub dpi: u32,
+    pub mode: usize,
+    /// Insert into this document at this page instead of opening a new image.
+    pub insert: Option<(u64, usize)>,
+}
+
 pub enum Dialog {
     ConfirmClose { docs: Vec<u64>, quit: bool },
     GoToPage(String),
@@ -74,6 +84,7 @@ pub enum Dialog {
     AdjustSize(SizeState),
     About,
     Shortcuts,
+    Scan(ScanState),
 }
 
 impl Dialog {
@@ -102,6 +113,16 @@ impl Dialog {
             password2: String::new(),
             pdf_only,
         })
+    }
+
+    pub fn scan(insert: Option<(u64, usize)>, ctx: &egui::Context) -> Dialog {
+        let (tx, rx) = unbounded();
+        let c = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::scanner::devices());
+            c.request_repaint();
+        });
+        Dialog::Scan(ScanState { devices: None, rx, device: 0, dpi: 300, mode: 0, insert })
     }
 
     pub fn print() -> Dialog {
@@ -275,6 +296,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         Dialog::Preferences => keep = preferences(app, ctx),
         Dialog::Signature(strokes) => keep = signature_pad(app, ctx, strokes),
         Dialog::Print(st) => keep = print_dialog(app, ctx, st),
+        Dialog::Scan(st) => keep = scan_dialog(app, ctx, st),
         Dialog::AdjustColor(st) => keep = adjust_color(app, ctx, st),
         Dialog::AdjustSize(st) => keep = adjust_size(app, ctx, st),
         Dialog::About => {
@@ -526,6 +548,7 @@ fn print_dialog(app: &mut App, ctx: &egui::Context, st: &mut PrintState) -> bool
         let tmp = std::env::temp_dir().join(format!("review-print-{}.pdf", crate::model::next_id()));
         let Some(di) = Some(app.active).filter(|i| *i < app.docs.len()) else { return false };
         let job: Box<dyn FnOnce() -> Result<(), String> + Send> = match app.docs[di].kind {
+            Kind::Model => return false,
             Kind::Pdf => {
                 let sources = app.sources.iter().map(|(k, s)| (*k, (s.path.clone(), s.password.clone()))).collect();
                 let plan = app.docs[di].save_plan(&tmp, &sources, &app.author());
@@ -554,9 +577,88 @@ fn print_dialog(app: &mut App, ctx: &egui::Context, st: &mut PrintState) -> bool
     keep
 }
 
+fn scan_dialog(app: &mut App, ctx: &egui::Context, st: &mut ScanState) -> bool {
+    let pal = Palette::of(ctx);
+    if let Ok(d) = st.rx.try_recv() {
+        st.devices = Some(d);
+    }
+    let modes = ["Color", "Gray", "Lineart"];
+    let mut keep = true;
+    let mut go = None;
+    window(if st.insert.is_some() { "Insert Page from Scanner" } else { "Import from Scanner" }).show(ctx, |ui| {
+        ui.set_width(380.0);
+        match &st.devices {
+            None => {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new());
+                    ui.label("Looking for scanners…");
+                });
+            }
+            Some(Err(e)) => {
+                ui.label(RichText::new(e).color(ui.visuals().error_fg_color));
+            }
+            Some(Ok(list)) if list.is_empty() => {
+                ui.label("No scanners found. Check that it is on and connected, or install its SANE driver.");
+            }
+            Some(Ok(list)) => {
+                egui::Grid::new("scan").num_columns(2).spacing(vec2(10.0, 8.0)).show(ui, |ui| {
+                    ui.label("Scanner:");
+                    egui::ComboBox::from_id_salt("scanner").width(240.0).selected_text(list[st.device.min(list.len() - 1)].label.clone()).show_ui(ui, |ui| {
+                        for (i, d) in list.iter().enumerate() {
+                            ui.selectable_value(&mut st.device, i, &d.label);
+                        }
+                    });
+                    ui.end_row();
+                    ui.label("Resolution:");
+                    egui::ComboBox::from_id_salt("dpi").selected_text(format!("{} dpi", st.dpi)).show_ui(ui, |ui| {
+                        for d in [75, 150, 300, 600, 1200] {
+                            ui.selectable_value(&mut st.dpi, d, format!("{d} dpi"));
+                        }
+                    });
+                    ui.end_row();
+                    ui.label("Kind:");
+                    ui.horizontal(|ui| {
+                        for (i, m) in ["Colour", "Black & White", "Text"].iter().enumerate() {
+                            ui.selectable_value(&mut st.mode, i, *m);
+                        }
+                    });
+                    ui.end_row();
+                });
+            }
+        }
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let ready = matches!(&st.devices, Some(Ok(l)) if !l.is_empty());
+                if ui.add_enabled(ready, egui::Button::new(RichText::new("Scan").color(Color32::WHITE)).fill(pal.accent).min_size(vec2(84.0, 28.0))).clicked() {
+                    if let Some(Ok(list)) = &st.devices {
+                        go = Some(list[st.device.min(list.len() - 1)].id.clone());
+                    }
+                }
+                if secondary(ui, "Cancel").clicked() {
+                    keep = false;
+                }
+            });
+        });
+    });
+    if let Some(device) = go {
+        let (dpi, mode, insert) = (st.dpi, modes[st.mode].to_string(), st.insert);
+        let tx = app.msg_tx.clone();
+        let c = ctx.clone();
+        app.toast("Scanning…");
+        std::thread::spawn(move || {
+            let result = crate::scanner::scan(&device, dpi, &mode);
+            let _ = tx.send(Msg::Scanned { insert, dpi, result });
+            c.request_repaint();
+        });
+        return false;
+    }
+    keep
+}
+
 fn preferences(app: &mut App, ctx: &egui::Context) -> bool {
     let mut open = true;
-    let before = format!("{:?}", (&app.settings.open_mode, &app.settings.background, app.settings.image_pixel_scale, &app.settings.pdf_view, app.settings.resume_last_page, app.settings.logical_page_numbers, &app.settings.author, app.settings.add_name_to_annotations, app.settings.dark_pdf));
+    let before = format!("{:?}", (&app.settings.open_mode, &app.settings.background, app.settings.image_pixel_scale, &app.settings.pdf_view, app.settings.resume_last_page, app.settings.logical_page_numbers, &app.settings.author, app.settings.add_name_to_annotations, app.settings.dark_pdf, app.settings.live_text));
     window("Preferences").open(&mut open).show(ctx, |ui| {
         ui.set_width(440.0);
         let tab_id = egui::Id::new("pref-tab");
@@ -578,6 +680,14 @@ fn preferences(app: &mut App, ctx: &egui::Context) -> bool {
                 egui::ComboBox::from_id_salt("bg").selected_text(format!("{:?}", s.background)).show_ui(ui, |ui| {
                     for b in [Background::System, Background::Light, Background::Dark, Background::Black] {
                         ui.selectable_value(&mut s.background, b, format!("{b:?}"));
+                    }
+                });
+                ui.end_row();
+                ui.label("Live Text:");
+                ui.vertical(|ui| {
+                    ui.checkbox(&mut s.live_text, "Select and search text in photos and scanned pages");
+                    if !crate::ocr::available() {
+                        ui.label(RichText::new("Needs Tesseract: sudo dnf install tesseract").small().color(Palette::of(ui.ctx()).text_weak));
                     }
                 });
                 ui.end_row();
@@ -628,7 +738,7 @@ fn preferences(app: &mut App, ctx: &egui::Context) -> bool {
             }
         });
     });
-    let after = format!("{:?}", (&app.settings.open_mode, &app.settings.background, app.settings.image_pixel_scale, &app.settings.pdf_view, app.settings.resume_last_page, app.settings.logical_page_numbers, &app.settings.author, app.settings.add_name_to_annotations, app.settings.dark_pdf));
+    let after = format!("{:?}", (&app.settings.open_mode, &app.settings.background, app.settings.image_pixel_scale, &app.settings.pdf_view, app.settings.resume_last_page, app.settings.logical_page_numbers, &app.settings.author, app.settings.add_name_to_annotations, app.settings.dark_pdf, app.settings.live_text));
     if before != after {
         app.settings.save();
     }

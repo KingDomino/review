@@ -31,7 +31,10 @@ Optional runtime helpers (the installer tells you which ones are missing):
 
 | For | Package |
 |---|---|
+| Live Text | `tesseract`, `tesseract-langpack-eng` (installed by default; `--no-ocr` skips it). Add `tesseract-langpack-deu` etc. for more languages |
 | HEIC/HEIF/AVIF photos | `libheif`, plus `libheif-freeworld` (RPM Fusion) for iPhone HEVC photos |
+| Import from Scanner | `sane-backends` (and your scanner's SANE driver) |
+| Soft Proof / Assign Profile | ICC profiles from `colord` (usually installed) |
 | Printing | `cups-client` (`lp`) |
 | File ▸ Take Screenshot | `spectacle` (KDE), `gnome-screenshot`, or `grim` + `slurp` |
 | Edit ▸ Speech | `speech-dispatcher-utils` |
@@ -40,7 +43,7 @@ Optional runtime helpers (the installer tells you which ones are missing):
 
 | Preview feature | Review |
 |---|---|
-| PDF, XPS, EPUB, CBZ, FB2, MOBI, SVG; PNG, JPEG, GIF, WebP, TIFF (multi-page), BMP, ICO, TGA, PNM, DDS, HDR, EXR, QOI, JPEG 2000, PSD, HEIC/HEIF/AVIF | ✓ |
+| PDF, XPS, EPUB, CBZ, FB2, MOBI, SVG; PNG, JPEG, GIF, WebP, TIFF (multi-page), BMP, ICO, TGA, PNM, DDS, HDR, EXR, QOI, JPEG 2000, JPEG XL, PSD, HEIC/HEIF/AVIF, camera RAW | ✓ |
 | Several files in one window, grouped in the sidebar; opening more files from Dolphin adds them to the running window | ✓ |
 | Thumbnails, Table of Contents, Highlights and Notes, Bookmarks, Contact Sheet | ✓ |
 | Continuous / Single Page / Two Pages; Actual Size, Zoom to Fit, Ctrl+scroll zoom anchored at the pointer, Zoom to Selection | ✓ |
@@ -59,7 +62,13 @@ Optional runtime helpers (the installer tells you which ones are missing):
 | Magnifier (\`), Slideshow, Full Screen, Print (CUPS) | ✓ |
 | New from Clipboard, Take Screenshot, Duplicate, Rename (double-click the title), Move to Trash, Revert to Saved | ✓ |
 | Undo/redo for everything, with Preview's action names | ✓ |
-| Live Text (OCR), camera RAW, JPEG XL, 3D models, ColorSync soft-proofing, scanner import | not yet |
+| **Live Text**: select, copy, highlight and search text in photos and scanned PDF pages; a *Live Text* button outlines everything recognised | ✓ on-device, with Tesseract |
+| Camera RAW (DNG, CR2, CR3, NEF, ARW, ORF, RW2, RAF, PEF, SRW…) and JPEG XL | ✓ |
+| Colour management: embedded ICC profiles (e.g. iPhone Display P3) shown correctly, **View ▸ Soft Proof with Profile**, **Tools ▸ Assign Profile** | ✓ Little CMS |
+| **3D models**: glTF/GLB, OBJ, STL, USD/USDA/USDC/USDZ — orbit, pan, zoom, export a snapshot | ✓ GPU-rendered |
+| Import from Scanner, Insert ▸ Page from Scanner | ✓ SANE |
+| Animated GIFs play (frames also browsable in the sidebar) | ✓ |
+| Customize Toolbar, Import from Camera, Preview on Apple Vision Pro | not planned |
 
 ### Shortcuts
 
@@ -99,7 +108,10 @@ cargo test -- --ignored          # also writes screenshots to $TMPDIR/review-sho
 | Module | Role |
 |---|---|
 | `src/pdf.rs` | MuPDF worker per document, tile raster pool, text, search, annotation import/export, saving |
-| `src/imaging.rs`, `src/heif.rs` | Image decoding, EXIF, colour pipeline, background removal, burning in markup, export |
+| `src/imaging.rs`, `src/heif.rs`, `src/color.rs` | Image decoding (incl. RAW, JPEG XL, HEIC), EXIF, ICC colour management, adjustments, background removal, burning in markup, export |
+| `src/ocr.rs` | Live Text: Tesseract recognition turned into selectable, searchable text |
+| `src/model3d.rs`, `src/view3d.rs` | 3D loading (glTF, OBJ, STL, USD) and the wgpu viewer |
+| `src/scanner.rs` | Import from Scanner (SANE) |
 | `src/model.rs`, `src/document.rs` | Cloneable document model (pages, annotations, form values), undo, save plans |
 | `src/canvas.rs` | Page layout, zoom/scroll, every pointer tool, form fields, magnifier, slideshow |
 | `src/render.rs`, `src/annots.rs` | Tile/texture caches and drawing pages and annotations |

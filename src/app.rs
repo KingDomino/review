@@ -105,6 +105,9 @@ pub enum Msg {
     Info(String),
     Error(String),
     NewImage(image::RgbaImage, String),
+    Ocr(crate::ocr::OcrResult),
+    Scanned { insert: Option<(u64, usize)>, dpi: u32, result: Result<image::RgbaImage, String> },
+    ModelLoaded { doc: u64, result: Result<crate::model3d::Scene, String> },
 }
 
 #[derive(Clone, Debug)]
@@ -130,9 +133,14 @@ pub struct Toast {
 pub enum PageUse {
     /// Copy (part of) a rendered page: crop rect in pixels of the rendered image.
     CopyImage(Option<Rect>),
+    /// Live Text on a scanned page rendered at `scale`.
+    Ocr { source: u64, page: u32, scale: f32 },
 }
 
 pub struct App {
+    /// GPU access for the 3D viewer.
+    pub wgpu: Option<eframe::egui_wgpu::RenderState>,
+    pub viewers: HashMap<u64, crate::view3d::Viewer>,
     image_jobs: Sender<(u64, PathBuf)>,
     pub engine: Engine,
     events: Receiver<Event>,
@@ -184,6 +192,17 @@ pub struct App {
     pub page_rects: Vec<(usize, Rect)>,
     /// Screen rect of each visible thumbnail in the last frame (doc id, slot index, rect).
     pub thumb_rects: Vec<(u64, usize, Rect)>,
+    ocr_tx: Sender<crate::ocr::OcrJob>,
+    ocr_req: HashSet<crate::ocr::OcrKey>,
+    /// Recognised text of image frames: (doc, frame) -> (pixels pointer, text).
+    pub image_texts: HashMap<(u64, usize), (usize, Arc<PageText>)>,
+    /// Scanned PDF pages whose text came from Live Text.
+    pub ocr_pages: HashSet<(u64, u32)>,
+    /// The Live Text button is on: outline all recognised text.
+    pub live_text_highlight: bool,
+    /// View ▸ Soft Proof with Profile.
+    pub proof: Option<Arc<crate::color::Proof>>,
+    proof_gen: u64,
     started: Instant,
     shot_requested: bool,
 }
@@ -221,6 +240,8 @@ pub enum Action {
     ShowInFolder,
     EditPermissions,
     Screenshot(u8),
+    ImportScanner,
+    InsertFromScanner,
     Undo,
     Redo,
     Cut,
@@ -422,7 +443,22 @@ impl App {
                 })
                 .expect("spawn decoder");
         }
+        let ocr_tx = {
+            let tx = msg_tx.clone();
+            let c = ctx.clone();
+            crate::ocr::spawn(move |r| {
+                let _ = tx.send(Msg::Ocr(r));
+                c.request_repaint();
+            })
+        };
         let mut app = Self {
+            wgpu: cc.wgpu_render_state.clone(),
+            viewers: HashMap::new(),
+            ocr_tx,
+            ocr_req: HashSet::new(),
+            image_texts: HashMap::new(),
+            ocr_pages: HashSet::new(),
+            live_text_highlight: false,
             image_jobs,
             engine,
             events,
@@ -471,6 +507,8 @@ impl App {
             thumb_scroll_to: None,
             page_rects: Vec::new(),
             thumb_rects: Vec::new(),
+            proof: None,
+            proof_gen: 0,
             started: Instant::now(),
             shot_requested: false,
             settings,
@@ -520,8 +558,22 @@ impl App {
         self.settings.save();
     }
 
+    fn load_model(&self, doc: u64, p: PathBuf) {
+        let tx = self.msg_tx.clone();
+        let ctx = self.ctx.clone();
+        std::thread::spawn(move || {
+            let result = crate::model3d::load(&p);
+            let _ = tx.send(Msg::ModelLoaded { doc, result });
+            ctx.request_repaint();
+        });
+    }
+
     fn open_one(&mut self, p: PathBuf) -> usize {
-        if imaging::is_image_path(&p) {
+        if crate::model3d::is_model_path(&p) {
+            let doc = Document::new(Some(p.clone()), Kind::Model);
+            self.load_model(doc.id, p);
+            self.docs.push(doc);
+        } else if imaging::is_image_path(&p) {
             let mut doc = Document::new(Some(p.clone()), Kind::Image);
             doc.fit = Fit::Auto;
             let _ = self.image_jobs.send((doc.id, p));
@@ -574,7 +626,18 @@ impl App {
             Kind::Image => {
                 let _ = self.image_jobs.send((doc.id, path));
             }
+            Kind::Model => {
+                let id = doc.id;
+                self.viewers.remove(&id);
+                let (tx, ctx) = (self.msg_tx.clone(), self.ctx.clone());
+                std::thread::spawn(move || {
+                    let result = crate::model3d::load(&path);
+                    let _ = tx.send(Msg::ModelLoaded { doc: id, result });
+                    ctx.request_repaint();
+                });
+            }
         }
+        let doc = &mut self.docs[idx];
         doc.state = LoadState::Loading;
         let m = std::fs::metadata(doc.path.as_ref().unwrap()).ok();
         doc.file_size = m.as_ref().map(|m| m.len()).unwrap_or(doc.file_size);
@@ -652,6 +715,7 @@ impl App {
             }
         }
         self.images.retain(|(d, _), _| *d != doc.id);
+        self.viewers.remove(&doc.id);
         if self.active >= self.docs.len() {
             self.active = self.docs.len().saturating_sub(1);
         } else if self.active > i {
@@ -692,7 +756,11 @@ impl App {
                 }
                 Event::Tile { key, image } => self.tiles.insert(&self.ctx, key, image),
                 Event::Text { source, page, text } => {
+                    let scanned = text.chars.is_empty();
                     self.texts.insert((source, page), text);
+                    if scanned {
+                        self.request_pdf_ocr(source, page);
+                    }
                 }
                 Event::Links { source, page, links } => {
                     self.links.insert((source, page), links);
@@ -735,6 +803,11 @@ impl App {
                 Event::PageImage { request, result } => {
                     let Some(usage) = self.page_requests.remove(&request) else { continue };
                     match (usage, result) {
+                        (PageUse::Ocr { source, page, scale }, Ok(img)) => {
+                            let origin = self.source_info.get(&source).and_then(|i| i.pages.get(page as usize)).map(|p| p.0.min).unwrap_or(Pos2::ZERO);
+                            let key = crate::ocr::OcrKey::Pdf { source, page };
+                            let _ = self.ocr_tx.send(crate::ocr::OcrJob { key, image: Arc::new(img), scale, origin });
+                        }
                         (PageUse::CopyImage(crop), Ok(img)) => {
                             let img = match crop {
                                 Some(r) => imaging::crop(&img, r),
@@ -787,8 +860,97 @@ impl App {
                 }
                 Msg::Info(s) => self.toast(s),
                 Msg::NewImage(img, name) => self.new_image_doc(img, &name),
+                Msg::ModelLoaded { doc, result } => {
+                    if let Some(i) = self.doc_index(doc) {
+                        let d = &mut self.docs[i];
+                        match result {
+                            Ok(scene) => {
+                                d.scene = Some(Arc::new(scene));
+                                d.state = LoadState::Ready;
+                            }
+                            Err(e) => d.state = LoadState::Failed(e),
+                        }
+                        self.viewers.remove(&doc);
+                        self.update_title();
+                    }
+                }
+                Msg::Scanned { insert, dpi, result } => match (insert, result) {
+                    (_, Err(e)) => self.error(format!("Scanning failed: {e}")),
+                    (None, Ok(img)) => {
+                        self.new_image_doc(img, "Scan");
+                        if let Some(m) = self.doc_mut().and_then(|d| d.image.as_mut()) {
+                            m.dpi = dpi as f32;
+                        }
+                    }
+                    (Some((doc, at)), Ok(img)) => {
+                        let tmp = std::env::temp_dir().join(format!("review-scan-{}.pdf", crate::model::next_id()));
+                        match crate::pdf::images_to_pdf(&[&img], dpi as f32, &tmp) {
+                            Ok(()) => self.queue_insert(doc, at, tmp),
+                            Err(e) => self.error(e),
+                        }
+                    }
+                },
+                Msg::Ocr(r) => {
+                    if let Ok(t) = r.text {
+                        match r.key {
+                            crate::ocr::OcrKey::Pdf { source, page } => {
+                                if !t.chars.is_empty() {
+                                    self.texts.insert((source, page), t);
+                                    self.ocr_pages.insert((source, page));
+                                }
+                            }
+                            crate::ocr::OcrKey::Image { doc, frame, ptr } => {
+                                self.image_texts.insert((doc, frame), (ptr, t));
+                            }
+                        }
+                        // Fold new text into an active search.
+                        if !self.search.query.is_empty() && !self.search.running {
+                            self.start_search();
+                        }
+                    }
+                }
                 Msg::Error(s) => self.error(s),
             }
+        }
+    }
+
+    /// Turn soft proofing on (with a profile) or off.
+    pub fn set_proof(&mut self, profile: Option<&crate::color::IccProfile>) {
+        let proof = match profile {
+            Some(p) => {
+                self.proof_gen += 1;
+                match crate::color::Proof::new(p, self.proof_gen) {
+                    Ok(pr) => Some(pr),
+                    Err(e) => {
+                        self.error(format!("Can't use “{}” for soft proofing: {e}", p.name));
+                        return;
+                    }
+                }
+            }
+            None => None,
+        };
+        self.proof = proof.clone();
+        self.tiles.set_proof(proof);
+    }
+
+    /// Tools ▸ Assign Profile: reinterpret the image's colours in the given profile.
+    pub fn assign_profile(&mut self, profile: &crate::color::IccProfile) {
+        let Some(d) = self.doc_mut() else { return };
+        let path = profile.path.clone();
+        let name = profile.name.clone();
+        let mut err = None;
+        for idx in d.target_pages() {
+            let Some(f) = d.model.frames.get(idx).cloned() else { continue };
+            match crate::color::assign(&f, &path) {
+                Ok(img) => d.edit_frame(idx, "Assign Profile", |_| img, |p| p),
+                Err(e) => err = Some(e),
+            }
+        }
+        if let Some(m) = d.image.as_mut() {
+            m.icc_name = Some(name);
+        }
+        if let Some(e) = err {
+            self.error(e);
         }
     }
 
@@ -862,8 +1024,39 @@ impl App {
             }
             return;
         }
+        // Live Text (photos and scanned pages) is searched here; PDF text by MuPDF.
+        let doc_id = doc.id;
+        let q = self.search.query.clone();
+        let mut local = Vec::new();
+        for (i, s) in doc.model.slots.iter().enumerate() {
+            let (page, text) = match s.src {
+                PageSrc::Image { frame } => match self.image_texts.get(&(doc_id, frame as usize)) {
+                    Some((_, t)) => (frame, t.clone()),
+                    None => continue,
+                },
+                PageSrc::Pdf { source, index } if self.ocr_pages.contains(&(source, index)) => match self.texts.get(&(source, index)) {
+                    Some(t) => (index, t.clone()),
+                    None => continue,
+                },
+                _ => continue,
+            };
+            let _ = i;
+            for (a, b) in crate::ocr::find(&text, &q) {
+                let (la, lb) = text.line_at(a);
+                local.push(SearchHit { page, rects: text.rects(a, b), context: text.text(la, lb).replace('\n', " ") });
+            }
+        }
+        self.search.hits.extend(local);
+        if !self.search.hits.is_empty() && self.search.current.is_none() {
+            self.search.current = Some(0);
+        }
+        self.sidebar = SidebarMode::Search;
+        self.settings.show_sidebar = true;
         if !doc.is_pdf() {
             self.search.running = false;
+            if let Some(0) = self.search.current {
+                self.reveal_hit(0);
+            }
             return;
         }
         // Search every source this document shows pages from.
@@ -888,7 +1081,11 @@ impl App {
     /// Slot index showing the hit's page.
     pub fn hit_slot(&self, hit: &SearchHit) -> Option<usize> {
         let doc = self.doc()?;
-        doc.model.slots.iter().position(|s| matches!(s.src, PageSrc::Pdf { index, .. } if index == hit.page))
+        doc.model.slots.iter().position(|s| match s.src {
+            PageSrc::Pdf { index, .. } => index == hit.page,
+            PageSrc::Image { frame } => frame == hit.page,
+            PageSrc::Blank => false,
+        })
     }
 
     pub fn reveal_hit(&mut self, i: usize) {
@@ -921,13 +1118,22 @@ impl App {
         let ready = doc.map(|d| d.ready()).unwrap_or(false);
         let is_pdf = doc.map(|d| d.is_pdf()).unwrap_or(false);
         let is_img = doc.map(|d| d.kind == Kind::Image && d.ready()).unwrap_or(false);
+        // 3D models are view-only: allow navigation, zoom, export and file commands.
+        if doc.map(|d| d.kind == Kind::Model).unwrap_or(false) {
+            return matches!(
+                a,
+                Open | NewFromClipboard | Screenshot(_) | ImportScanner | Preferences | About | Quit | HideSidebar | Sidebar(_) | Escape
+                    | Close | ExportAs | Inspector | ZoomIn | ZoomOut | ZoomFit | ActualSize | Fullscreen | PrevDoc | NextDoc
+                    | MoveToTrash | ShowInFolder | Rename | Revert
+            ) && (ready || matches!(a, Open | Close | Quit | Preferences | About | Escape)) && !(matches!(a, PrevDoc | NextDoc) && self.docs.len() < 2) && a != Revert;
+        }
         match a {
-            Open | NewFromClipboard | Screenshot(_) | Preferences | About | Quit | HideSidebar | Sidebar(_) | Escape => true,
+            Open | NewFromClipboard | Screenshot(_) | ImportScanner | Preferences | About | Quit | HideSidebar | Sidebar(_) | Escape => true,
             Undo => doc.map(|d| d.undo_name().is_some()).unwrap_or(false),
             Redo => doc.map(|d| d.redo_name().is_some()).unwrap_or(false),
             Save => ready && doc.map(|d| d.dirty() && !d.saving).unwrap_or(false),
             Revert => ready && doc.map(|d| d.dirty() && d.path.is_some()).unwrap_or(false),
-            EditPermissions | InsertBlank | InsertFromFile | ViewMode(_) | DarkPdf | HighlightFields | AddBookmark => is_pdf,
+            EditPermissions | InsertBlank | InsertFromFile | InsertFromScanner | ViewMode(_) | DarkPdf | HighlightFields | AddBookmark => is_pdf,
             AdjustColor | AdjustSize | FlipH | FlipV | RemoveBackground | Tool(crate::app::Tool::InstantAlpha) => is_img,
             ShowLocation => doc.and_then(|d| d.image.as_ref()).map(|i| i.gps.is_some()).unwrap_or(false),
             Tool(crate::app::Tool::Markup(_)) | Tool(crate::app::Tool::Redact) => is_pdf,
@@ -947,6 +1153,17 @@ impl App {
     pub fn run(&mut self, a: Action) {
         use Action::*;
         if !self.enabled(a) {
+            return;
+        }
+        if matches!(a, ZoomIn | ZoomOut | ZoomFit | ActualSize) && self.doc().map(|d| d.kind == Kind::Model).unwrap_or(false) {
+            let id = self.doc().map(|d| d.id).unwrap_or(0);
+            if let Some(v) = self.viewers.get_mut(&id) {
+                match a {
+                    ZoomIn => v.cam.dist /= 1.25,
+                    ZoomOut => v.cam.dist *= 1.25,
+                    _ => v.cam = v.home,
+                }
+            }
             return;
         }
         match a {
@@ -1002,6 +1219,13 @@ impl App {
                 self.dialog = Some(crate::dialogs::Dialog::Permissions(sec, String::new()));
             }
             Screenshot(kind) => crate::platform::screenshot(kind, self.msg_tx.clone(), self.ctx.clone()),
+            ImportScanner => self.dialog = Some(crate::dialogs::Dialog::scan(None, &self.ctx)),
+            InsertFromScanner => {
+                if let Some(d) = self.doc() {
+                    let at = (d.current + 1).min(d.page_count());
+                    self.dialog = Some(crate::dialogs::Dialog::scan(Some((d.id, at)), &self.ctx));
+                }
+            }
             Undo => {
                 if let Some(d) = self.doc_mut() {
                     d.undo();
@@ -1271,8 +1495,54 @@ impl App {
         let src = self.doc()?.model.slots.get(slot)?.src.clone();
         match src {
             PageSrc::Pdf { source, index } => self.page_text(source, index),
-            _ => None,
+            PageSrc::Image { frame } => self.image_text(self.active, frame as usize),
+            PageSrc::Blank => None,
         }
+    }
+
+    /// Live Text for an image frame; starts recognition the first time it's asked for.
+    pub fn image_text(&mut self, doc_idx: usize, frame: usize) -> Option<Arc<PageText>> {
+        let d = self.docs.get(doc_idx)?;
+        let img = d.model.frames.get(frame)?.clone();
+        let ptr = Arc::as_ptr(&img) as usize;
+        if let Some((p, t)) = self.image_texts.get(&(d.id, frame)) {
+            if *p == ptr {
+                return Some(t.clone());
+            }
+        }
+        let key = crate::ocr::OcrKey::Image { doc: d.id, frame, ptr };
+        if self.settings.live_text && crate::ocr::available() && self.ocr_req.insert(key) {
+            let _ = self.ocr_tx.send(crate::ocr::OcrJob { key, image: img, scale: 1.0, origin: Pos2::ZERO });
+        }
+        None
+    }
+
+    /// Render a text-less PDF page at ~300 dpi and run Live Text on it.
+    fn request_pdf_ocr(&mut self, source: u64, page: u32) {
+        let key = crate::ocr::OcrKey::Pdf { source, page };
+        if !self.settings.live_text || !crate::ocr::available() || !self.ocr_req.insert(key) {
+            return;
+        }
+        let Some(src) = self.sources.get(&source) else { return };
+        let size = self.source_info.get(&source).and_then(|i| i.pages.get(page as usize)).map(|p| p.0.size()).unwrap_or(egui::vec2(612.0, 792.0));
+        let scale = (300.0 / 72.0f32).min(5000.0 / size.x.max(size.y).max(1.0));
+        let req = self.next_request;
+        self.next_request += 1;
+        self.page_requests.insert(req, PageUse::Ocr { source, page, scale });
+        src.render_page(page, scale, req, false);
+    }
+
+    /// The current page's text if it came from Live Text (drives the Live Text button).
+    pub fn live_text_for_current(&mut self) -> Option<(usize, Arc<PageText>)> {
+        let d = self.doc()?;
+        let cur = d.current;
+        let src = d.model.slots.get(cur)?.src.clone();
+        let t = match src {
+            PageSrc::Image { frame } => self.image_text(self.active, frame as usize)?,
+            PageSrc::Pdf { source, index } if self.ocr_pages.contains(&(source, index)) => self.texts.get(&(source, index))?.clone(),
+            _ => return None,
+        };
+        (!t.chars.is_empty()).then_some((cur, t))
     }
 
     pub fn selected_text(&mut self) -> Option<String> {
@@ -1316,6 +1586,7 @@ impl App {
 
     pub fn go_to(&mut self, page: usize) {
         if let Some(d) = self.doc_mut() {
+            d.playing = None;
             let page = page.min(d.page_count().saturating_sub(1));
             if d.history.get(d.history_pos) != Some(&page) {
                 d.history.truncate(d.history_pos + 1);
@@ -1393,14 +1664,14 @@ impl App {
 
     fn select_all(&mut self) {
         let Some(d) = self.doc() else { return };
-        let cur = d.current;
-        if d.kind == Kind::Image {
-            if let Some(s) = d.model.slots.get(cur) {
-                self.sel.rect = Some((d.id, cur, s.bounds));
-            }
-        } else if let Some(text) = self.slot_text(cur) {
-            let id = self.doc().map(|d| d.id).unwrap_or(0);
-            self.sel.text = Some(TextSel { doc: id, slot: cur, a: 0, b: text.chars.len() });
+        let (cur, id, is_image) = (d.current, d.id, d.kind == Kind::Image);
+        let bounds = d.model.slots.get(cur).map(|s| s.bounds);
+        // Text first (PDF text, or Live Text in a photo with the text tool), else the whole image.
+        let text = if !is_image || self.tool == Tool::Text { self.slot_text(cur).filter(|t| !t.chars.is_empty()) } else { None };
+        match (text, bounds) {
+            (Some(t), _) => self.sel.text = Some(TextSel { doc: id, slot: cur, a: 0, b: t.chars.len() }),
+            (None, Some(b)) if is_image => self.sel.rect = Some((id, cur, b)),
+            _ => {}
         }
     }
 
@@ -1416,6 +1687,7 @@ impl App {
         }
         let cur = d.current;
         match d.kind {
+            Kind::Model => {}
             Kind::Image => {
                 let Some(mut img) = d.flattened_frame(cur) else { return };
                 if let Some((_, s, r)) = self.sel.rect {
@@ -1558,6 +1830,7 @@ impl App {
             has_alpha: true,
             color_model: "RGB + Alpha".into(),
             thumb: None,
+            icc_name: None,
         }));
         doc.edits = 1;
         self.docs.push(doc);
@@ -1628,6 +1901,17 @@ impl App {
         let fmt = opts.as_ref().map(|o| o.format).or_else(|| ExportFormat::from_path(&dest)).unwrap_or(ExportFormat::Pdf);
         let security = opts.as_ref().and_then(|o| o.security.clone());
         match d.kind {
+            Kind::Model => {
+                // Export a snapshot of the current 3D view.
+                let id = d.id;
+                let (Some(rs), Some(v)) = (self.wgpu.clone(), self.viewers.get_mut(&id)) else { return };
+                let bg = crate::theme::Palette::of(&self.ctx).canvas;
+                let snap = v.snapshot(&rs, [2400, 1800], bg);
+                let (q, alpha) = opts.as_ref().map(|o| (o.quality, o.alpha)).unwrap_or((90, false));
+                let fmt = if fmt == ExportFormat::Pdf { ExportFormat::Png } else { fmt };
+                let result = snap.and_then(|img| imaging::export(&img, fmt, q, alpha, 144.0, &dest));
+                let _ = self.msg_tx.send(Msg::ImageSaved { doc: id, path: dest, result, reload: false });
+            }
             Kind::Pdf if fmt == ExportFormat::Pdf => {
                 if !d.is_pdf() {
                     // EPUB, XPS, CBZ…: let MuPDF convert it.
@@ -1771,7 +2055,7 @@ impl App {
         }
     }
 
-    fn queue_insert(&mut self, doc: u64, at: usize, path: PathBuf) {
+    pub fn queue_insert(&mut self, doc: u64, at: usize, path: PathBuf) {
         let sid = crate::model::next_id();
         self.sources.insert(sid, self.engine.open(sid, &path, None));
         self.ctx.data_mut(|d| {
@@ -1941,6 +2225,7 @@ fn copy_image_to_clipboard(img: &image::RgbaImage, tx: &Sender<Msg>) {
 pub fn supported_exts() -> Vec<&'static str> {
     let mut v = vec!["pdf", "xps", "oxps", "epub", "cbz", "fb2", "mobi", "svg"];
     v.extend_from_slice(imaging::IMAGE_EXTS);
+    v.extend_from_slice(crate::model3d::MODEL_EXTS);
     v
 }
 

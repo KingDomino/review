@@ -555,3 +555,109 @@ fn edge_tiles_not_stretched() {
         check(slot.to_screen(tr, egui::pos2(540.0, 770.0)), false, "thumbnail left of square");
     }
 }
+
+fn text_image(text: &str) -> image::RgbaImage {
+    let img = image::RgbaImage::from_pixel(900, 160, image::Rgba([250, 250, 245, 255]));
+    let a = crate::model::Annot::new(
+        crate::model::Shape::Text { rect: egui::Rect::from_min_size(egui::pos2(20.0, 30.0), egui::vec2(860.0, 100.0)), text: text.into() },
+        crate::model::Style { font_size: 56.0, text_color: egui::Color32::BLACK, width: 0.0, ..Default::default() },
+    );
+    crate::imaging::burn_annotations(&img, &[a], crate::theme::INTER)
+}
+
+fn wait_for(h: &mut Harness<'static, App>, mut done: impl FnMut(&mut App) -> bool) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(30) {
+        h.step();
+        if done(h.state_mut()) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(40));
+    }
+    false
+}
+
+#[test]
+fn live_text_photo_and_scan() {
+    if !crate::ocr::available() {
+        eprintln!("tesseract not installed; skipping");
+        return;
+    }
+    let dir = tmp("live");
+    let photo = dir.join("sign.png");
+    text_image("Fresh dumplings today").save(&photo).unwrap();
+    let scan = dir.join("scan.pdf");
+    let img = text_image("Quarterly invoice total");
+    crate::pdf::images_to_pdf(&[&img], 150.0, &scan).unwrap();
+
+    let mut h = harness(vec![photo, scan], false);
+    settle(&mut h);
+
+    // Photo: recognised text can be selected and copied.
+    h.state_mut().activate(0);
+    assert!(wait_for(&mut h, |a| a.live_text_for_current().is_some()), "photo recognised");
+    h.state_mut().run(Action::Tool(crate::app::Tool::Text));
+    h.state_mut().run(Action::SelectAll);
+    let sel = h.state_mut().selected_text().unwrap_or_default().to_lowercase();
+    assert!(sel.contains("dumplings"), "photo text: {sel:?}");
+    // ...and searched.
+    h.state_mut().search.query = "today".into();
+    h.state_mut().start_search();
+    assert_eq!(h.state().search.hits.len(), 1, "search finds Live Text");
+    // The Live Text button outlines everything.
+    h.state_mut().live_text_highlight = true;
+    settle(&mut h);
+    shot(&mut h, "30-live-text-photo");
+
+    // Scanned PDF: no real text, so Live Text runs on the rendered page.
+    h.state_mut().search.query.clear();
+    h.state_mut().start_search();
+    h.state_mut().activate(1);
+    assert!(wait_for(&mut h, |a| a.live_text_for_current().is_some()), "scan recognised");
+    h.state_mut().docs[1].current = 0;
+    let cur_text = h.state_mut().slot_text(0).expect("scan text");
+    let all = cur_text.text(0, cur_text.chars.len()).to_lowercase();
+    assert!(all.contains("invoice"), "scan text: {all:?}");
+    settle(&mut h);
+    shot(&mut h, "31-live-text-scan");
+}
+
+#[test]
+fn view_3d_models() {
+    let dir = tmp("3d");
+    let files = crate::model3d::tests::write_samples(&dir);
+    let mut h = harness(files.clone(), true);
+    settle(&mut h);
+    for (i, name) in ["32-3d-obj", "33-3d-usd", "34-3d-gltf"].iter().enumerate() {
+        h.state_mut().activate(i);
+        settle(&mut h);
+        let d = &h.state().docs[i];
+        assert!(d.ready(), "{} loaded: {:?}", d.name, d.state);
+        // The model must actually be drawn: the middle of the canvas differs from the background.
+        let img = h.render().unwrap();
+        let bg = crate::theme::Palette::of(&h.state().ctx).canvas;
+        let (w, hgt) = img.dimensions();
+        let centre = *img.get_pixel(w * 6 / 10, hgt / 2);
+        let differs = (centre[0] as i32 - bg.r() as i32).abs() + (centre[1] as i32 - bg.g() as i32).abs() + (centre[2] as i32 - bg.b() as i32).abs() > 30;
+        assert!(differs, "{name}: model not visible at centre ({centre:?} vs bg {bg:?})");
+        shot(&mut h, name);
+    }
+    // Orbit and zoom change the camera; double-click resets it.
+    h.state_mut().activate(0);
+    settle(&mut h);
+    let id = h.state().docs[0].id;
+    let before = h.state().viewers[&id].cam;
+    drag(&mut h, egui::pos2(700.0, 400.0), egui::pos2(820.0, 460.0));
+    let after = h.state().viewers[&id].cam;
+    assert!((after.yaw - before.yaw).abs() > 0.1 && (after.pitch - before.pitch).abs() > 0.05, "drag orbits");
+    h.state_mut().run(Action::ZoomIn);
+    assert!(h.state().viewers[&id].cam.dist < after.dist);
+    h.state_mut().run(Action::ActualSize);
+    assert_eq!(h.state().viewers[&id].cam, h.state().viewers[&id].home);
+    // Export a snapshot.
+    let out = dir.join("snap.png");
+    h.state_mut().save_to(0, out.clone(), Some(crate::app::ExportOpts { format: crate::imaging::ExportFormat::Png, quality: 90, alpha: false, security: None }), false);
+    settle(&mut h);
+    let snap = image::open(&out).expect("snapshot written").to_rgba8();
+    assert_eq!(snap.dimensions(), (2400, 1800));
+}

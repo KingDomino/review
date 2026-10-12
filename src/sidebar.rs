@@ -81,7 +81,11 @@ fn thumbnails(app: &mut App, ui: &mut Ui) {
                 }
                 let name = app.docs[di].name.clone();
                 let dirty = app.docs[di].dirty();
-                let icon = if app.docs[di].kind == Kind::Image { ph::IMAGE } else { ph::FILE_PDF };
+                let icon = match app.docs[di].kind {
+                    Kind::Image => ph::IMAGE,
+                    Kind::Model => ph::CUBE,
+                    Kind::Pdf => ph::FILE_PDF,
+                };
                 ui.painter().text(hr.left_center() + vec2(8.0, 0.0), Align2::LEFT_CENTER, icon, FontId::proportional(14.0), if active { pal.accent } else { pal.text_weak });
                 let galley = ui.painter().layout(format!("{name}{}", if dirty { " •" } else { "" }), FontId::new(12.0, bold()), if active { pal.text } else { pal.text_weak }, hr.width() - 52.0);
                 ui.painter().galley(hr.left_center() + vec2(28.0, -galley.size().y / 2.0), galley, pal.text);
@@ -122,6 +126,37 @@ fn thumbnails(app: &mut App, ui: &mut Ui) {
                 y += 44.0;
                 continue;
             }
+            if app.docs[di].kind == Kind::Model {
+                // One cell showing the live 3D view.
+                let size = vec2(thumb_w, thumb_w * 0.75);
+                let cell = Rect::from_min_size(origin + vec2(0.0, y), vec2(width, size.y + 30.0));
+                let pr = Rect::from_min_size(origin + vec2((width - size.x) / 2.0, y + 6.0), size);
+                let resp = ui.interact(cell, egui::Id::new(("thumb3d", doc_id)), Sense::click());
+                page_shadow(ui.painter(), pr, pal.page_shadow);
+                ui.painter().rect_filled(pr, 4.0, pal.canvas);
+                // Render a first view for models that haven't been shown yet.
+                if !app.viewers.contains_key(&doc_id) {
+                    if let (Some(rs), Some(scene)) = (app.wgpu.clone(), app.docs[di].scene.clone()) {
+                        let mut v = crate::view3d::Viewer::new(&rs, &scene);
+                        let px = (size * ppp).round();
+                        v.render(&rs, [px.x as u32, px.y as u32], pal.canvas);
+                        app.viewers.insert(doc_id, v);
+                    }
+                }
+                if let Some(tex) = app.viewers.get(&doc_id).and_then(|v| v.thumbnail_id()) {
+                    ui.painter().image(tex, pr, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                } else {
+                    ui.painter().text(pr.center(), Align2::CENTER_CENTER, ph::CUBE, FontId::proportional(32.0), pal.text_weak);
+                }
+                if active {
+                    ui.painter().rect_stroke(pr.expand(2.0), 3.0, Stroke::new(2.0, pal.accent), StrokeKind::Outside);
+                }
+                if resp.clicked() {
+                    activate_doc = Some(di);
+                }
+                y += size.y + 36.0;
+                continue;
+            }
             let n = app.docs[di].page_count();
             for i in 0..n {
                 let ds = app.docs[di].model.slots[i].display_size();
@@ -153,10 +188,10 @@ fn thumbnails(app: &mut App, ui: &mut Ui) {
                     }
                     page_shadow(ui.painter(), pr, pal.page_shadow);
                     {
-                        let App { docs, tiles, sources, images, settings, .. } = &mut *app;
+                        let App { docs, tiles, sources, images, settings, proof, .. } = &mut *app;
                         let doc = &docs[di];
                         let slot = &doc.model.slots[i];
-                        let mut dc = DrawCtx { tiles, sources, images, frames: &doc.model.frames, thumb: doc.thumb.as_ref(), doc_id: doc.id, dark: settings.dark_pdf && doc.kind == Kind::Pdf, ppp };
+                        let mut dc = DrawCtx { tiles, sources, images, frames: &doc.model.frames, thumb: doc.thumb.as_ref(), doc_id: doc.id, dark: settings.dark_pdf && doc.kind == Kind::Pdf, ppp, proof: proof.as_deref() };
                         draw_slot(&mut dc, ui.painter(), slot, pr, ui.clip_rect(), true);
                         let p = ui.painter().with_clip_rect(pr.intersect(ui.clip_rect()));
                         for a in &slot.annots {
