@@ -9,7 +9,7 @@ menus, shortcuts and panels follow Preview's own (recovered with
 but every line is original code built on [egui](https://github.com/emilk/egui) and
 [MuPDF](https://mupdf.com).
 
-## Install (Fedora / any Linux)
+## Install (Any Linux Distro)
 
 ```sh
 cd review
