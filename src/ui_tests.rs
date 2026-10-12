@@ -770,7 +770,7 @@ fn photo_print_layout() {
     exact.crop_marks = true;
     let out = dir.join("page.pdf");
     let frames = vec![image::RgbaImage::from_pixel(300, 200, image::Rgba([255, 0, 0, 255]))];
-    crate::dialogs::print_photo(&frames, &exact, "", 1, Some(&out)).unwrap();
+    crate::dialogs::print_photo(&frames, &exact, "", 1, Some(&out), None).unwrap();
     let page = crate::pdf::render_page_image(&out, None, 0, 1.0).unwrap();
     assert_eq!(page.dimensions(), (612, 792), "US Letter");
     let red = red_box(&page, 1.0, egui::Rect::EVERYTHING).unwrap();

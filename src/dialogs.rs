@@ -53,9 +53,9 @@ pub struct ExportState {
 }
 
 pub struct PrintState {
-    pub printers: Vec<String>,
+    pub printers: Vec<crate::platform::Printer>,
     /// Printers and the default printer's paper, looked up off the UI thread.
-    loading: Option<Receiver<(Vec<String>, usize)>>,
+    loading: Option<Receiver<(Vec<crate::platform::Printer>, usize)>>,
     pub printer: usize,
     pub copies: u32,
     pub range: String,
@@ -161,7 +161,7 @@ impl Dialog {
         let (tx, rx) = unbounded();
         std::thread::spawn(move || {
             let printers = crate::platform::printers();
-            let paper = crate::platform::default_paper(printers.first().map(String::as_str).unwrap_or(""));
+            let paper = crate::platform::default_paper(printers.first().map(|p| p.name.as_str()).unwrap_or(""));
             let _ = tx.send((printers, paper));
         });
         let photo = app.doc().filter(|d| d.kind == Kind::Image).and_then(|d| {
@@ -581,13 +581,18 @@ fn print_dialog(app: &mut App, ctx: &egui::Context, st: &mut PrintState) -> bool
                     } else if st.printers.is_empty() {
                         ui.label(RichText::new(if cfg!(windows) { "No printers found" } else { "No printers found (is CUPS running?)" }).color(pal.text_weak));
                     } else {
-                        egui::ComboBox::from_id_salt("printer").selected_text(st.printers[st.printer.min(st.printers.len() - 1)].clone()).width(220.0).show_ui(ui, |ui| {
+                        egui::ComboBox::from_id_salt("printer").selected_text(st.printers[st.printer.min(st.printers.len() - 1)].name.clone()).width(220.0).show_ui(ui, |ui| {
                             for (i, p) in st.printers.iter().enumerate() {
-                                ui.selectable_value(&mut st.printer, i, p);
+                                ui.selectable_value(&mut st.printer, i, &p.name);
                             }
                         });
                     }
                     ui.end_row();
+                    if st.printers.get(st.printer).is_some_and(|p| p.file_ext.is_some()) {
+                        ui.label("");
+                        ui.label(RichText::new("Saves to a file; you’ll be asked where.").size(11.5).color(pal.text_weak));
+                        ui.end_row();
+                    }
                     ui.label("Copies:");
                     ui.add(egui::DragValue::new(&mut st.copies).range(1..=999));
                     ui.end_row();
@@ -633,25 +638,44 @@ fn print_dialog(app: &mut App, ctx: &egui::Context, st: &mut PrintState) -> bool
     let Some(di) = Some(app.active).filter(|i| *i < app.docs.len()) else { return false };
     let tx = app.msg_tx.clone();
     let c = ctx.clone();
+    let printer = st.printers.get(st.printer).map(|p| p.name.clone()).unwrap_or_default();
+    let file_ext = st.printers.get(st.printer).and_then(|p| p.file_ext);
+    // Where to save: for Save as PDF, or for a printer that writes a file.
+    let ask_dest = |ext: &str, title: &str| {
+        let d = &app.docs[di];
+        let dir = d.path.as_ref().and_then(|p| p.parent()).map(|p| p.to_path_buf()).unwrap_or_default();
+        let name = format!("{} (print).{ext}", d.path.as_ref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| d.name.clone()));
+        rfd::FileDialog::new().set_directory(dir).set_file_name(name).add_filter(ext.to_uppercase(), &[ext]).set_title(title).save_file()
+    };
+    if go && st.photo.is_none() && file_ext.is_some() {
+        // A PDF "printed" to a file printer is just a copy of the document: save it instead.
+        if let Some(d) = app.doc() {
+            app.dialog = Some(Dialog::export(d, true, &app.settings));
+        }
+        return true;
+    }
     if let Some(ph) = st.photo.as_ref().filter(|_| go || save_pdf) {
         let dest = if save_pdf {
-            let d = &app.docs[di];
-            let dir = d.path.as_ref().and_then(|p| p.parent()).map(|p| p.to_path_buf()).unwrap_or_default();
-            let name = format!("{} (print).pdf", d.path.as_ref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| d.name.clone()));
-            match rfd::FileDialog::new().set_directory(dir).set_file_name(name).add_filter("PDF", &["pdf"]).set_title("Save as PDF").save_file() {
+            match ask_dest("pdf", "Save as PDF") {
                 Some(p) => Some(p),
                 None => return true,
             }
         } else {
             None
         };
+        let to_file = match file_ext.filter(|_| go) {
+            Some(ext) => match ask_dest(ext, &format!("Print to {printer}")) {
+                Some(p) => Some(p),
+                None => return true,
+            },
+            None => None,
+        };
         let frames: Vec<RgbaImage> = (0..app.docs[di].page_count()).filter_map(|i| app.docs[di].flattened_frame(i)).collect();
         let layout = ph.layout;
-        let printer = st.printers.get(st.printer).cloned().unwrap_or_default();
         let copies = st.copies;
         std::thread::spawn(move || {
-            let r = print_photo(&frames, &layout, &printer, copies, dest.as_deref());
-            let _ = tx.send(match (r, &dest) {
+            let r = print_photo(&frames, &layout, &printer, copies, dest.as_deref(), to_file.as_deref());
+            let _ = tx.send(match (r, dest.as_ref().or(to_file.as_ref())) {
                 (Ok(()), Some(p)) => Msg::Info(format!("Saved “{}”", p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default())),
                 (Ok(()), None) => Msg::Info(format!("Sent to {printer}")),
                 (Err(e), _) => Msg::Error(format!("Printing failed: {e}")),
@@ -661,7 +685,6 @@ fn print_dialog(app: &mut App, ctx: &egui::Context, st: &mut PrintState) -> bool
         return false;
     }
     if go {
-        let printer = st.printers.get(st.printer).cloned().unwrap_or_default();
         let (copies, range, fit, two) = (st.copies, st.range.clone(), st.fit, st.two_sided);
         let tmp = std::env::temp_dir().join(format!("review-print-{}.pdf", crate::model::next_id()));
         let job: Box<dyn FnOnce() -> Result<(), String> + Send> = match app.docs[di].kind {
@@ -689,7 +712,8 @@ fn print_dialog(app: &mut App, ctx: &egui::Context, st: &mut PrintState) -> bool
 }
 
 /// Lay the photo out and print it (or save the laid-out page as a PDF when `dest` is given).
-pub(crate) fn print_photo(frames: &[RgbaImage], layout: &crate::printing::Layout, printer: &str, copies: u32, dest: Option<&std::path::Path>) -> Result<(), String> {
+/// `to_file` is the output file for printers that write one (Microsoft Print to PDF).
+pub(crate) fn print_photo(frames: &[RgbaImage], layout: &crate::printing::Layout, printer: &str, copies: u32, dest: Option<&std::path::Path>, to_file: Option<&std::path::Path>) -> Result<(), String> {
     let placed = crate::printing::place(layout, frames);
     if let Some(dest) = dest {
         return crate::pdf::layout_to_pdf(layout.page(), &placed, layout.crop_marks, dest);
@@ -705,12 +729,13 @@ pub(crate) fn print_photo(frames: &[RgbaImage], layout: &crate::printing::Layout
             p.image.save(&f).map_err(|e| e.to_string())?;
             pages.push((f, p.rect));
         }
-        let r = crate::platform::print_placed(&crate::printing::windows_print_script(printer, copies, layout, &pages));
+        let r = crate::platform::print_placed(&crate::printing::windows_print_script(printer, copies, layout, &pages, to_file));
         let _ = std::fs::remove_dir_all(&dir);
         r
     }
     #[cfg(not(windows))]
     {
+        let _ = to_file; // CUPS has no printers that prompt for a file.
         let tmp = std::env::temp_dir().join(format!("review-print-{}.pdf", crate::model::next_id()));
         let r = crate::pdf::layout_to_pdf(layout.page(), &placed, layout.crop_marks, &tmp)
             .and_then(|_| crate::platform::print_file(&tmp, printer, copies, "", false, false, Some(crate::printing::PAPERS[layout.paper].pwg)));

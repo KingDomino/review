@@ -201,7 +201,7 @@ pub fn place<'a>(layout: &Layout, frames: &'a [image::RgbaImage]) -> Vec<Placed<
 /// PowerShell that prints the PNGs at exact positions through .NET's PrintDocument, so the
 /// system PDF handler can't rescale them. Rects are in points on the oriented page.
 #[cfg(any(windows, test))]
-pub fn windows_print_script(printer: &str, copies: u32, layout: &Layout, pages: &[(std::path::PathBuf, Rect)]) -> String {
+pub fn windows_print_script(printer: &str, copies: u32, layout: &Layout, pages: &[(std::path::PathBuf, Rect)], to_file: Option<&std::path::Path>) -> String {
     let q = |s: &str| s.replace('\'', "''");
     let h = |pt: f32| (pt / 72.0 * 100.0).round(); // hundredths of an inch
     let paper = PAPERS[layout.paper.min(PAPERS.len() - 1)].size;
@@ -231,6 +231,7 @@ $d.DocumentName = 'Review'
 if ('{printer}' -ne '') {{ $d.PrinterSettings.PrinterName = '{printer}' }}
 if (-not $d.PrinterSettings.IsValid) {{ throw 'Printer not found' }}
 $d.PrinterSettings.Copies = {copies}
+{to_file}
 $d.DefaultPageSettings.Landscape = ${landscape}
 $ps = $d.PrinterSettings.PaperSizes | Where-Object {{ [math]::Abs($_.Width - {pw}) -le 4 -and [math]::Abs($_.Height - {ph}) -le 4 }} | Select-Object -First 1
 if (-not $ps) {{ $ps = New-Object System.Drawing.Printing.PaperSize('Custom', {pw}, {ph}) }}
@@ -254,6 +255,7 @@ $d.add_PrintPage({{ param($s, $e)
 $d.Print()
 "#,
         printer = q(printer),
+        to_file = to_file.map(|f| format!("$d.PrinterSettings.PrintToFile = $true\n$d.PrinterSettings.PrintFileName = '{}'", q(&f.to_string_lossy()))).unwrap_or_default(),
         copies = copies.clamp(1, 999),
         landscape = if layout.landscape { "true" } else { "false" },
         pw = h(paper.x),
@@ -313,10 +315,14 @@ mod tests {
         l.left = IN;
         l.top = 2.0 * IN;
         l.crop_marks = true;
-        let s = windows_print_script("Office's printer", 2, &l, &[("C:\\t\\p.png".into(), l.rect(2.0 / 3.0))]);
+        let s = windows_print_script("Office's printer", 2, &l, &[("C:\\t\\p.png".into(), l.rect(2.0 / 3.0))], None);
         assert!(s.contains("x=100;y=200;w=300;h=200"), "{s}");
         assert!(s.contains("'Office''s printer'"));
         assert!(s.contains("Copies = 2") && s.contains("Landscape = $false"));
         assert!(s.contains("[math]::Abs($_.Width - 850)"));
+        assert!(!s.contains("PrintToFile"));
+        // Print to PDF writes straight to the file chosen in Review.
+        let s = windows_print_script("Microsoft Print to PDF", 1, &l, &[("C:\\t\\p.png".into(), l.rect(2.0 / 3.0))], Some(std::path::Path::new("C:\\Users\\me\\photo.pdf")));
+        assert!(s.contains("PrintToFile = $true") && s.contains("PrintFileName = 'C:\\Users\\me\\photo.pdf'"), "{s}");
     }
 }

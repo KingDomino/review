@@ -170,11 +170,44 @@ pub fn render_page_file(path: &Path, password: Option<&str>, index: u32, dpi: f3
     crate::pdf::render_page_image(path, password, index, dpi / 72.0)
 }
 
-/// Printer names, with the default first.
+pub struct Printer {
+    pub name: String,
+    /// Printers that write a file instead of printing (Microsoft Print to PDF, XPS Document
+    /// Writer) need a file name up front: their own "save as" prompt can't appear when
+    /// printing from the background. The extension of the file they write.
+    pub file_ext: Option<&'static str>,
+}
+
+/// Printers, with the default first.
 #[cfg(windows)]
-pub fn printers() -> Vec<String> {
-    let out = powershell("Get-Printer | Sort-Object -Property @{Expression={$_.Default}} -Descending | ForEach-Object { $_.Name }");
-    out.map(|o| String::from_utf8_lossy(&o.stdout).lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect()).unwrap_or_default()
+pub fn printers() -> Vec<Printer> {
+    let out = powershell("Get-CimInstance Win32_Printer | Sort-Object -Property Default -Descending | ForEach-Object { $_.Name + [char]9 + $_.PortName + [char]9 + $_.DriverName }");
+    out.map(|o| parse_windows_printers(&String::from_utf8_lossy(&o.stdout))).unwrap_or_default()
+}
+
+/// Lines of `name<TAB>port<TAB>driver` from Win32_Printer.
+#[cfg(any(windows, test))]
+fn parse_windows_printers(text: &str) -> Vec<Printer> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let f: Vec<&str> = line.trim_end_matches('\r').split('\t').collect();
+        let (name, port, driver) = (f[0].trim(), f.get(1).map(|s| s.trim()).unwrap_or(""), f.get(2).map(|s| s.to_lowercase()).unwrap_or_default());
+        // Fax opens its own wizard and can't be driven from here.
+        if name.is_empty() || port.eq_ignore_ascii_case("SHRFAX:") {
+            continue;
+        }
+        let file_ext = if driver.contains("print to pdf") {
+            Some("pdf")
+        } else if driver.contains("xps document writer") {
+            Some("oxps")
+        } else if port.eq_ignore_ascii_case("PORTPROMPT:") || port.eq_ignore_ascii_case("FILE:") {
+            Some("prn")
+        } else {
+            None
+        };
+        out.push(Printer { name: name.to_string(), file_ext });
+    }
+    out
 }
 
 /// Run a script from `printing::windows_print_script` (photos placed at exact sizes).
@@ -184,7 +217,12 @@ pub fn print_placed(script: &str) -> Result<(), String> {
     if o.status.success() {
         Ok(())
     } else {
-        Err(String::from_utf8_lossy(&o.stderr).lines().find(|l| !l.trim().is_empty()).unwrap_or("PowerShell failed").trim().to_string())
+        let err = String::from_utf8_lossy(&o.stderr).lines().find(|l| !l.trim().is_empty()).unwrap_or("PowerShell failed").trim().to_string();
+        if err.contains("StartDocPrinter") {
+            // ERROR_SPL_NO_STARTDOC: the spooler refused to start the job.
+            return Err("the printer didn’t accept the job. Check that it’s online and not paused in Settings ▸ Printers & scanners.".into());
+        }
+        Err(err)
     }
 }
 
@@ -257,9 +295,14 @@ fn region() -> String {
         .unwrap_or_default()
 }
 
-/// Printer names known to CUPS, with the default first.
+/// Printers known to CUPS, with the default first.
 #[cfg(not(windows))]
-pub fn printers() -> Vec<String> {
+pub fn printers() -> Vec<Printer> {
+    cups_printers().into_iter().map(|name| Printer { name, file_ext: None }).collect()
+}
+
+#[cfg(not(windows))]
+fn cups_printers() -> Vec<String> {
     let mut out = Vec::new();
     let default = Command::new("lpstat").arg("-d").output().ok().and_then(|o| {
         let s = String::from_utf8_lossy(&o.stdout).to_string();
@@ -348,4 +391,15 @@ pub fn pick_files_fallback(dir: Option<&Path>) -> Vec<PathBuf> {
     out.filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).lines().filter(|l| !l.is_empty()).map(PathBuf::from).collect())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn windows_printer_list() {
+        let text = "Microsoft Print to PDF\tPORTPROMPT:\tMicrosoft Print To PDF\r\nOffice Laser\t192.168.1.20\tHP Universal Printing PCL 6\r\nFax\tSHRFAX:\tMicrosoft Shared Fax Driver\r\nMicrosoft XPS Document Writer\tPORTPROMPT:\tMicrosoft XPS Document Writer v4\r\n";
+        let p = super::parse_windows_printers(text);
+        let got: Vec<(&str, Option<&str>)> = p.iter().map(|p| (p.name.as_str(), p.file_ext)).collect();
+        assert_eq!(got, vec![("Microsoft Print to PDF", Some("pdf")), ("Office Laser", None), ("Microsoft XPS Document Writer", Some("oxps"))]);
+    }
 }
