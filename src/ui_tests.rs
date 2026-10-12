@@ -700,3 +700,83 @@ fn zoom_keeps_position() {
     assert!(h.state().docs[0].zoom > 0.9);
     assert_eq!(after, before, "page under the cursor after zooming in");
 }
+
+/// Bounding box (in points) of the pure-red pixels inside `within`.
+fn red_box(img: &image::RgbaImage, ppp: f32, within: egui::Rect) -> Option<egui::Rect> {
+    let mut r = egui::Rect::NOTHING;
+    for (x, y, p) in img.enumerate_pixels() {
+        let pt = egui::pos2(x as f32 / ppp, y as f32 / ppp);
+        if within.contains(pt) && p[0] > 230 && p[1] < 40 && p[2] < 40 {
+            r.extend_with(pt);
+        }
+    }
+    r.is_positive().then_some(r)
+}
+
+/// Photo printing: drag the photo and a corner in the preview, then check the printed page.
+#[test]
+fn photo_print_layout() {
+    let dir = tmp("photoprint");
+    let path = dir.join("red.png");
+    image::RgbaImage::from_pixel(300, 200, image::Rgba([255, 0, 0, 255])).save(&path).unwrap();
+    let mut h = harness(vec![path], false);
+    settle(&mut h);
+    h.state_mut().run(Action::Print);
+    for _ in 0..5 {
+        h.step();
+    }
+    let layout = |h: &Harness<'static, App>| match &h.state().dialog {
+        Some(crate::dialogs::Dialog::Print(st)) => st.photo.as_ref().expect("photo print").layout,
+        _ => panic!("print dialog not open"),
+    };
+    // 300x200 px at 72 ppi is 300x200 pt: actual size, centred on portrait paper.
+    let l = layout(&h);
+    assert!(!l.fit && l.center && !l.landscape, "{l:?}");
+    assert!((l.width - 300.0).abs() < 0.01);
+    shot(&mut h, "print-dialog");
+    let ppp = 1.5;
+    let (paper, s) = h.state().print_preview.expect("preview drawn");
+    let to_screen = |p: egui::Pos2| paper.min + p.to_vec2() * s;
+    // The preview shows the photo where the layout says.
+    let r = l.rect(2.0 / 3.0);
+    let seen = red_box(&h.render().unwrap(), ppp, paper).expect("photo visible in preview");
+    let want = egui::Rect::from_min_max(to_screen(r.min), to_screen(r.max));
+    assert!((seen.min - want.min).length() < 2.0 && (seen.max - want.max).length() < 2.0, "preview {seen:?} vs {want:?}");
+
+    // Drag the photo 40 points right and 30 down on screen.
+    drag(&mut h, want.center(), want.center() + egui::vec2(40.0, 30.0));
+    let l2 = layout(&h);
+    assert!(!l2.center, "moving turns Center off");
+    let moved = l2.rect(2.0 / 3.0).min - r.min;
+    assert!((moved - egui::vec2(40.0, 30.0) / s).length() < 1.0 / s + 0.5, "moved {moved:?}");
+    // Drag the bottom-right corner outwards: grows, top-left stays.
+    let r2 = l2.rect(2.0 / 3.0);
+    let corner = to_screen(r2.max);
+    drag(&mut h, corner, corner + egui::vec2(60.0, 0.0));
+    let l3 = layout(&h);
+    let r3 = l3.rect(2.0 / 3.0);
+    assert!((r3.min - r2.min).length() < 0.5, "anchored corner moved: {r2:?} -> {r3:?}");
+    assert!((r3.width() - (r2.width() + 60.0 / s)).abs() < 1.0 / s + 0.5, "{} vs {}", r3.width(), r2.width() + 60.0 / s);
+    assert!((r3.height() / r3.width() - 2.0 / 3.0).abs() < 1e-3, "keeps the aspect ratio");
+    shot(&mut h, "print-dialog-moved");
+
+    // Print exactly 6 x 4 in, 1 in from the top-left, with crop marks; check the page.
+    let mut exact = l3;
+    exact.center = false;
+    exact.fit = false;
+    exact.width = 6.0 * 72.0;
+    exact.left = 72.0;
+    exact.top = 72.0;
+    exact.crop_marks = true;
+    let out = dir.join("page.pdf");
+    let frames = vec![image::RgbaImage::from_pixel(300, 200, image::Rgba([255, 0, 0, 255]))];
+    crate::dialogs::print_photo(&frames, &exact, "", 1, Some(&out)).unwrap();
+    let page = crate::pdf::render_page_image(&out, None, 0, 1.0).unwrap();
+    assert_eq!(page.dimensions(), (612, 792), "US Letter");
+    let red = red_box(&page, 1.0, egui::Rect::EVERYTHING).unwrap();
+    assert!((red.min - egui::pos2(72.0, 72.0)).length() < 1.5 && (red.max - egui::pos2(72.0 + 432.0, 72.0 + 288.0)).length() < 1.5, "printed at {red:?}");
+    // A crop mark sits just left of the top-left corner.
+    let fine = crate::pdf::render_page_image(&out, None, 0, 4.0).unwrap();
+    let mark = (286..=290).map(|y| *fine.get_pixel((72 - 12) * 4, y)).min_by_key(|p| p[0]).unwrap();
+    assert!(mark[0] < 80 && mark[1] < 80, "crop mark: {mark:?}");
+}

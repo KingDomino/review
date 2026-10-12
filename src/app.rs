@@ -189,6 +189,8 @@ pub struct App {
     pub thumb_scroll_to: Option<usize>,
     /// Screen rect of each visible page in the last frame (slot index, rect).
     pub page_rects: Vec<(usize, Rect)>,
+    /// Print dialog preview: paper rect on screen and points-to-screen scale (for tests).
+    pub print_preview: Option<(Rect, f32)>,
     /// Screen rect of each visible thumbnail in the last frame (doc id, slot index, rect).
     pub thumb_rects: Vec<(u64, usize, Rect)>,
     ocr_tx: Sender<crate::ocr::OcrJob>,
@@ -495,6 +497,7 @@ impl App {
             renaming: None,
             thumb_scroll_to: None,
             page_rects: Vec::new(),
+            print_preview: None,
             thumb_rects: Vec::new(),
             proof: None,
             proof_gen: 0,
@@ -1204,7 +1207,7 @@ impl App {
                     self.dialog = Some(crate::dialogs::Dialog::export(d, a == ExportPdf, &self.settings));
                 }
             }
-            Print => self.dialog = Some(crate::dialogs::Dialog::print()),
+            Print => self.dialog = Some(crate::dialogs::Dialog::print(self)),
             Revert => {
                 if let Some(d) = self.doc_mut() {
                     d.edits = 0;

@@ -177,8 +177,45 @@ pub fn printers() -> Vec<String> {
     out.map(|o| String::from_utf8_lossy(&o.stdout).lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect()).unwrap_or_default()
 }
 
+/// Run a script from `printing::windows_print_script` (photos placed at exact sizes).
 #[cfg(windows)]
-pub fn print_file(file: &Path, printer: &str, copies: u32, _ranges: &str, _fit: bool, _two_sided: bool) -> Result<(), String> {
+pub fn print_placed(script: &str) -> Result<(), String> {
+    let o = powershell(script).map_err(|e| e.to_string())?;
+    if o.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&o.stderr).lines().find(|l| !l.trim().is_empty()).unwrap_or("PowerShell failed").trim().to_string())
+    }
+}
+
+/// The paper the printer is set up for, else the usual paper in the user's region.
+pub fn default_paper(printer: &str) -> usize {
+    printer_paper(printer)
+        .and_then(|n| crate::printing::paper_by_name(&n))
+        .unwrap_or_else(region_paper)
+}
+
+/// US Letter or A4, by the user's region.
+pub fn region_paper() -> usize {
+    if crate::printing::letter_region(&region()) { 0 } else { 4 }
+}
+
+#[cfg(windows)]
+fn printer_paper(printer: &str) -> Option<String> {
+    if printer.is_empty() {
+        return None;
+    }
+    let o = powershell(&format!("(Get-PrintConfiguration -PrinterName '{}').PaperSize", printer.replace('\'', "''"))).ok()?;
+    Some(String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|s| !s.is_empty())
+}
+
+#[cfg(windows)]
+fn region() -> String {
+    windows::Globalization::GeographicRegion::new().and_then(|r| r.CodeTwoLetter()).map(|s| s.to_string()).unwrap_or_default()
+}
+
+#[cfg(windows)]
+pub fn print_file(file: &Path, printer: &str, copies: u32, _ranges: &str, _fit: bool, _two_sided: bool, _media: Option<&str>) -> Result<(), String> {
     // Hand the PDF to the system's PDF handler; PrintTo targets a specific printer.
     let f = file.display().to_string().replace('\'', "''");
     let p = printer.replace('\'', "''");
@@ -194,6 +231,30 @@ pub fn print_file(file: &Path, printer: &str, copies: u32, _ranges: &str, _fit: 
         }
     }
     Ok(())
+}
+
+/// The default paper in the printer's CUPS options (`lpoptions -l` marks it with `*`).
+#[cfg(not(windows))]
+fn printer_paper(printer: &str) -> Option<String> {
+    let mut c = Command::new("lpoptions");
+    if !printer.is_empty() {
+        c.args(["-p", printer]);
+    }
+    let o = c.arg("-l").output().ok()?;
+    let text = String::from_utf8_lossy(&o.stdout).to_string();
+    let line = text.lines().find(|l| l.starts_with("PageSize") || l.starts_with("media"))?;
+    line.split_whitespace().find_map(|w| w.strip_prefix('*')).map(str::to_string)
+}
+
+/// Two-letter region from the locale (`en_US.UTF-8` → `US`).
+#[cfg(not(windows))]
+fn region() -> String {
+    ["LC_PAPER", "LC_ALL", "LANG"]
+        .iter()
+        .filter_map(|v| std::env::var(v).ok())
+        .find(|v| !v.is_empty() && v != "C" && v != "POSIX")
+        .and_then(|v| v.split(['.', '@']).next().and_then(|l| l.split('_').nth(1)).map(str::to_string))
+        .unwrap_or_default()
 }
 
 /// Printer names known to CUPS, with the default first.
@@ -218,8 +279,10 @@ pub fn printers() -> Vec<String> {
     out
 }
 
+/// Print a PDF with CUPS. With `media`, the pages are already laid out for that paper and are
+/// printed at 100% (photo printing); otherwise `fit` scales them to the printer's paper.
 #[cfg(not(windows))]
-pub fn print_file(file: &Path, printer: &str, copies: u32, ranges: &str, fit: bool, two_sided: bool) -> Result<(), String> {
+pub fn print_file(file: &Path, printer: &str, copies: u32, ranges: &str, fit: bool, two_sided: bool, media: Option<&str>) -> Result<(), String> {
     let mut c = Command::new("lp");
     if !printer.is_empty() {
         c.args(["-d", printer]);
@@ -228,7 +291,9 @@ pub fn print_file(file: &Path, printer: &str, copies: u32, ranges: &str, fit: bo
     if !ranges.trim().is_empty() {
         c.args(["-P", ranges.trim()]);
     }
-    if fit {
+    if let Some(m) = media {
+        c.args(["-o", &format!("media={m}"), "-o", "print-scaling=none"]);
+    } else if fit {
         c.args(["-o", "fit-to-page"]);
     }
     if two_sided {

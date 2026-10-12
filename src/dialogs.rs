@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crossbeam_channel::{unbounded, Receiver, Sender};
-use egui::{vec2, Color32, FontId, Pos2, RichText, Sense, Stroke, Ui};
+use egui::{pos2, vec2, Color32, FontId, Pos2, RichText, Sense, Stroke, Ui};
 use image::RgbaImage;
 
 use crate::app::{shortcut_text, shortcuts, App, Msg};
@@ -54,13 +54,43 @@ pub struct ExportState {
 
 pub struct PrintState {
     pub printers: Vec<String>,
-    loading: Option<Receiver<Vec<String>>>,
+    /// Printers and the default printer's paper, looked up off the UI thread.
+    loading: Option<Receiver<(Vec<String>, usize)>>,
     pub printer: usize,
     pub copies: u32,
     pub range: String,
     pub fit: bool,
     pub two_sided: bool,
     pub busy: bool,
+    /// Photo printing (images): size and position on the paper, like Photoshop's Print Settings.
+    pub photo: Option<PhotoPrint>,
+}
+
+pub struct PhotoPrint {
+    pub layout: crate::printing::Layout,
+    pub units: crate::printing::Units,
+    /// Image size at its own resolution, in points (100% scale).
+    native: egui::Vec2,
+    /// Pixel size of the current page.
+    px: (u32, u32),
+    tex: egui::TextureHandle,
+    /// The user picked a paper, so the printer's default no longer applies.
+    paper_chosen: bool,
+    drag: Option<PhotoDrag>,
+}
+
+#[derive(Clone, Copy)]
+enum PhotoDrag {
+    /// Grabbed at this offset from the image's top-left (points).
+    Move(egui::Vec2),
+    /// Dragging a corner; the opposite corner stays put (or the centre, when centred).
+    Resize { anchor: Pos2, left: bool, top: bool },
+}
+
+impl PhotoPrint {
+    fn aspect(&self) -> f32 {
+        self.px.1 as f32 / self.px.0.max(1) as f32
+    }
 }
 
 pub struct ScanState {
@@ -126,13 +156,35 @@ impl Dialog {
         Dialog::Scan(ScanState { devices: None, rx, device: 0, dpi: 300, mode: 0, insert })
     }
 
-    pub fn print() -> Dialog {
+    pub fn print(app: &App) -> Dialog {
         // Looking printers up can take a moment (PowerShell / network printers): do it off the UI thread.
         let (tx, rx) = unbounded();
         std::thread::spawn(move || {
-            let _ = tx.send(crate::platform::printers());
+            let printers = crate::platform::printers();
+            let paper = crate::platform::default_paper(printers.first().map(String::as_str).unwrap_or(""));
+            let _ = tx.send((printers, paper));
         });
-        Dialog::Print(PrintState { printers: Vec::new(), loading: Some(rx), printer: 0, copies: 1, range: String::new(), fit: true, two_sided: false, busy: false })
+        let photo = app.doc().filter(|d| d.kind == Kind::Image).and_then(|d| {
+            let img = d.flattened_frame(d.current.min(d.page_count().saturating_sub(1)))?;
+            let dpi = d.image.as_ref().map(|i| i.dpi).filter(|d| *d > 1.0).unwrap_or(72.0);
+            let native = vec2(img.width() as f32, img.height() as f32) * 72.0 / dpi;
+            let thumb = image::imageops::thumbnail(&img, 1024.min(img.width()), (1024 * img.height() / img.width().max(1)).min(img.height()).max(1));
+            let tex = app.ctx.load_texture("print-preview", egui::ColorImage::from_rgba_unmultiplied([thumb.width() as usize, thumb.height() as usize], thumb.as_raw()), egui::TextureOptions::LINEAR);
+            let chosen = app.settings.print_paper.as_deref().and_then(|n| crate::printing::PAPERS.iter().position(|p| p.name == n));
+            let units = crate::printing::Units::ALL.into_iter().find(|u| Some(u.name()) == app.settings.print_units.as_deref());
+            let paper = chosen.unwrap_or_else(crate::platform::region_paper);
+            let metric = paper != 0 && crate::printing::PAPERS[paper].pwg.starts_with("iso");
+            Some(PhotoPrint {
+                layout: crate::printing::Layout::new(paper, native),
+                units: units.unwrap_or(if metric { crate::printing::Units::Centimeters } else { crate::printing::Units::Inches }),
+                native,
+                px: (img.width(), img.height()),
+                tex,
+                paper_chosen: chosen.is_some(),
+                drag: None,
+            })
+        });
+        Dialog::Print(PrintState { printers: Vec::new(), loading: Some(rx), printer: 0, copies: 1, range: String::new(), fit: true, two_sided: false, busy: false, photo })
     }
 
     pub fn adjust_color(d: &Document) -> Dialog {
@@ -499,51 +551,74 @@ fn estimate(px: u64, f: ExportFormat, q: u8) -> u64 {
 fn print_dialog(app: &mut App, ctx: &egui::Context, st: &mut PrintState) -> bool {
     let pal = Palette::of(ctx);
     if let Some(rx) = &st.loading {
-        if let Ok(p) = rx.try_recv() {
-            st.printers = p;
+        if let Ok((printers, paper)) = rx.try_recv() {
+            st.printers = printers;
             st.loading = None;
+            if let Some(ph) = st.photo.as_mut().filter(|p| !p.paper_chosen && p.layout.paper != paper) {
+                let marks = ph.layout.crop_marks;
+                ph.layout = crate::printing::Layout::new(paper, ph.native);
+                ph.layout.crop_marks = marks;
+            }
         } else {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
     }
     let mut keep = true;
     let mut go = false;
+    let mut save_pdf = false;
     window("Print").show(ctx, |ui| {
-        ui.set_width(380.0);
-        egui::Grid::new("print").num_columns(2).spacing(vec2(10.0, 8.0)).show(ui, |ui| {
-            ui.label("Printer:");
-            if st.loading.is_some() {
-                ui.add(egui::Spinner::new());
-            } else if st.printers.is_empty() {
-                ui.label(RichText::new(if cfg!(windows) { "No printers found" } else { "No printers found (is CUPS running?)" }).color(pal.text_weak));
-            } else {
-                egui::ComboBox::from_id_salt("printer").selected_text(st.printers[st.printer.min(st.printers.len() - 1)].clone()).width(220.0).show_ui(ui, |ui| {
-                    for (i, p) in st.printers.iter().enumerate() {
-                        ui.selectable_value(&mut st.printer, i, p);
+        ui.horizontal_top(|ui| {
+            if let Some(ph) = st.photo.as_mut() {
+                app.print_preview = Some(print_preview(ui, ph));
+                ui.add_space(14.0);
+            }
+            ui.vertical(|ui| {
+                ui.set_width(330.0);
+                egui::Grid::new("print").num_columns(2).spacing(vec2(10.0, 8.0)).show(ui, |ui| {
+                    ui.label("Printer:");
+                    if st.loading.is_some() {
+                        ui.add(egui::Spinner::new());
+                    } else if st.printers.is_empty() {
+                        ui.label(RichText::new(if cfg!(windows) { "No printers found" } else { "No printers found (is CUPS running?)" }).color(pal.text_weak));
+                    } else {
+                        egui::ComboBox::from_id_salt("printer").selected_text(st.printers[st.printer.min(st.printers.len() - 1)].clone()).width(220.0).show_ui(ui, |ui| {
+                            for (i, p) in st.printers.iter().enumerate() {
+                                ui.selectable_value(&mut st.printer, i, p);
+                            }
+                        });
+                    }
+                    ui.end_row();
+                    ui.label("Copies:");
+                    ui.add(egui::DragValue::new(&mut st.copies).range(1..=999));
+                    ui.end_row();
+                    if st.photo.is_none() {
+                        ui.label("Pages:");
+                        ui.add(egui::TextEdit::singleline(&mut st.range).hint_text("All  (e.g. 1-3, 7)").desired_width(200.0));
+                        ui.end_row();
+                        ui.label("");
+                        ui.checkbox(&mut st.fit, "Scale to fit paper");
+                        ui.end_row();
+                        ui.label("");
+                        ui.checkbox(&mut st.two_sided, "Two-sided");
+                        ui.end_row();
                     }
                 });
-            }
-            ui.end_row();
-            ui.label("Copies:");
-            ui.add(egui::DragValue::new(&mut st.copies).range(1..=999));
-            ui.end_row();
-            ui.label("Pages:");
-            ui.add(egui::TextEdit::singleline(&mut st.range).hint_text("All  (e.g. 1-3, 7)").desired_width(200.0));
-            ui.end_row();
-            ui.label("");
-            ui.checkbox(&mut st.fit, "Scale to fit paper");
-            ui.end_row();
-            ui.label("");
-            ui.checkbox(&mut st.two_sided, "Two-sided");
-            ui.end_row();
+                if let Some(ph) = st.photo.as_mut() {
+                    photo_controls(app, ui, ph);
+                }
+            });
         });
         ui.add_space(10.0);
         ui.horizontal(|ui| {
             if ui.button("Save as PDF…").clicked() {
-                if let Some(d) = app.doc() {
-                    app.dialog = Some(Dialog::export(d, true, &app.settings));
+                if st.photo.is_some() {
+                    save_pdf = true;
+                } else {
+                    if let Some(d) = app.doc() {
+                        app.dialog = Some(Dialog::export(d, true, &app.settings));
+                    }
+                    keep = false;
                 }
-                keep = false;
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.add_enabled(!st.printers.is_empty() && !st.busy, egui::Button::new(RichText::new("Print").color(Color32::WHITE)).fill(pal.accent).min_size(vec2(84.0, 28.0))).clicked() {
@@ -555,15 +630,42 @@ fn print_dialog(app: &mut App, ctx: &egui::Context, st: &mut PrintState) -> bool
             });
         });
     });
+    let Some(di) = Some(app.active).filter(|i| *i < app.docs.len()) else { return false };
+    let tx = app.msg_tx.clone();
+    let c = ctx.clone();
+    if let Some(ph) = st.photo.as_ref().filter(|_| go || save_pdf) {
+        let dest = if save_pdf {
+            let d = &app.docs[di];
+            let dir = d.path.as_ref().and_then(|p| p.parent()).map(|p| p.to_path_buf()).unwrap_or_default();
+            let name = format!("{} (print).pdf", d.path.as_ref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| d.name.clone()));
+            match rfd::FileDialog::new().set_directory(dir).set_file_name(name).add_filter("PDF", &["pdf"]).set_title("Save as PDF").save_file() {
+                Some(p) => Some(p),
+                None => return true,
+            }
+        } else {
+            None
+        };
+        let frames: Vec<RgbaImage> = (0..app.docs[di].page_count()).filter_map(|i| app.docs[di].flattened_frame(i)).collect();
+        let layout = ph.layout;
+        let printer = st.printers.get(st.printer).cloned().unwrap_or_default();
+        let copies = st.copies;
+        std::thread::spawn(move || {
+            let r = print_photo(&frames, &layout, &printer, copies, dest.as_deref());
+            let _ = tx.send(match (r, &dest) {
+                (Ok(()), Some(p)) => Msg::Info(format!("Saved “{}”", p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default())),
+                (Ok(()), None) => Msg::Info(format!("Sent to {printer}")),
+                (Err(e), _) => Msg::Error(format!("Printing failed: {e}")),
+            });
+            c.request_repaint();
+        });
+        return false;
+    }
     if go {
         let printer = st.printers.get(st.printer).cloned().unwrap_or_default();
         let (copies, range, fit, two) = (st.copies, st.range.clone(), st.fit, st.two_sided);
-        let tx = app.msg_tx.clone();
-        let c = ctx.clone();
         let tmp = std::env::temp_dir().join(format!("review-print-{}.pdf", crate::model::next_id()));
-        let Some(di) = Some(app.active).filter(|i| *i < app.docs.len()) else { return false };
         let job: Box<dyn FnOnce() -> Result<(), String> + Send> = match app.docs[di].kind {
-            Kind::Model => return false,
+            Kind::Model | Kind::Image => return false,
             Kind::Pdf => {
                 let sources = app.sources.iter().map(|(k, s)| (*k, (s.path.clone(), s.password.clone()))).collect();
                 let plan = app.docs[di].save_plan(&tmp, &sources, &app.author());
@@ -571,15 +673,9 @@ fn print_dialog(app: &mut App, ctx: &egui::Context, st: &mut PrintState) -> bool
                 let Some((path, pw)) = src else { return false };
                 Box::new(move || crate::pdf::save(&path, pw.as_deref(), &plan))
             }
-            Kind::Image => {
-                let frames: Vec<RgbaImage> = (0..app.docs[di].page_count()).filter_map(|i| app.docs[di].flattened_frame(i)).collect();
-                let dpi = app.docs[di].image.as_ref().map(|i| i.dpi).unwrap_or(72.0).max(150.0);
-                let t = tmp.clone();
-                Box::new(move || crate::pdf::images_to_pdf(&frames.iter().collect::<Vec<_>>(), dpi, &t))
-            }
         };
         std::thread::spawn(move || {
-            let r = job().and_then(|_| crate::platform::print_file(&tmp, &printer, copies, &range, fit, two));
+            let r = job().and_then(|_| crate::platform::print_file(&tmp, &printer, copies, &range, fit, two, None));
             let _ = std::fs::remove_file(&tmp);
             let _ = tx.send(match r {
                 Ok(()) => Msg::Info(format!("Sent to {printer}")),
@@ -590,6 +686,252 @@ fn print_dialog(app: &mut App, ctx: &egui::Context, st: &mut PrintState) -> bool
         return false;
     }
     keep
+}
+
+/// Lay the photo out and print it (or save the laid-out page as a PDF when `dest` is given).
+pub(crate) fn print_photo(frames: &[RgbaImage], layout: &crate::printing::Layout, printer: &str, copies: u32, dest: Option<&std::path::Path>) -> Result<(), String> {
+    let placed = crate::printing::place(layout, frames);
+    if let Some(dest) = dest {
+        return crate::pdf::layout_to_pdf(layout.page(), &placed, layout.crop_marks, dest);
+    }
+    #[cfg(windows)]
+    {
+        // Straight to the printer through .NET, so no PDF viewer can rescale the page.
+        let dir = std::env::temp_dir().join(format!("review-print-{}", crate::model::next_id()));
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let mut pages = Vec::new();
+        for (i, p) in placed.iter().enumerate() {
+            let f = dir.join(format!("{i}.png"));
+            p.image.save(&f).map_err(|e| e.to_string())?;
+            pages.push((f, p.rect));
+        }
+        let r = crate::platform::print_placed(&crate::printing::windows_print_script(printer, copies, layout, &pages));
+        let _ = std::fs::remove_dir_all(&dir);
+        r
+    }
+    #[cfg(not(windows))]
+    {
+        let tmp = std::env::temp_dir().join(format!("review-print-{}.pdf", crate::model::next_id()));
+        let r = crate::pdf::layout_to_pdf(layout.page(), &placed, layout.crop_marks, &tmp)
+            .and_then(|_| crate::platform::print_file(&tmp, printer, copies, "", false, false, Some(crate::printing::PAPERS[layout.paper].pwg)));
+        let _ = std::fs::remove_file(&tmp);
+        r
+    }
+}
+
+/// The paper with the photo on it: drag the photo to move it, drag a corner to resize it.
+/// Returns the paper's screen rect and the points-to-screen scale.
+fn print_preview(ui: &mut Ui, ph: &mut PhotoPrint) -> (egui::Rect, f32) {
+    let pal = Palette::of(ui.ctx());
+    let (area, resp) = ui.allocate_exact_size(vec2(420.0, 440.0), Sense::click_and_drag());
+    let painter = ui.painter_at(area);
+    painter.rect_filled(area, 8, pal.canvas);
+    let page = ph.layout.page();
+    let s = ((area.width() - 40.0) / page.x).min((area.height() - 40.0) / page.y);
+    let paper = egui::Rect::from_center_size(area.center(), page * s);
+    let to_screen = |p: Pos2| paper.min + p.to_vec2() * s;
+    let to_page = |p: Pos2| ((p - paper.min) / s).to_pos2();
+    let aspect = ph.aspect();
+
+    // Interaction (before painting, so the frame shows the new position).
+    let r = ph.layout.rect(aspect);
+    let sr = egui::Rect::from_min_max(to_screen(r.min), to_screen(r.max));
+    let corners = [(sr.left_top(), true, true), (sr.right_top(), false, true), (sr.left_bottom(), true, false), (sr.right_bottom(), false, false)];
+    let hit_corner = |p: Pos2| corners.iter().find(|(c, _, _)| (*c - p).length() < 9.0).copied();
+    if let Some(h) = resp.hover_pos() {
+        if hit_corner(h).is_some() || matches!(ph.drag, Some(PhotoDrag::Resize { .. })) {
+            let (_, l, t) = hit_corner(h).unwrap_or((h, true, true));
+            ui.ctx().set_cursor_icon(if l == t { egui::CursorIcon::ResizeNwSe } else { egui::CursorIcon::ResizeNeSw });
+        } else if sr.contains(h) || matches!(ph.drag, Some(PhotoDrag::Move(_))) {
+            ui.ctx().set_cursor_icon(if ph.drag.is_some() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab });
+        }
+    }
+    if resp.drag_started() {
+        let p = ui.input(|i| i.pointer.press_origin()).unwrap_or_default();
+        ph.drag = if let Some((_, left, top)) = hit_corner(p) {
+            let anchor = if ph.layout.center { r.center() } else { pos2(if left { r.max.x } else { r.min.x }, if top { r.max.y } else { r.min.y }) };
+            Some(PhotoDrag::Resize { anchor, left, top })
+        } else if sr.contains(p) {
+            Some(PhotoDrag::Move(to_page(p) - r.min))
+        } else {
+            None
+        };
+    }
+    if let (Some(d), Some(p)) = (ph.drag, resp.interact_pointer_pos().filter(|_| resp.dragged())) {
+        let p = to_page(p);
+        let l = &mut ph.layout;
+        match d {
+            PhotoDrag::Move(off) => {
+                let min = p - off;
+                l.center = false;
+                l.left = min.x;
+                l.top = min.y;
+            }
+            PhotoDrag::Resize { anchor, left, top } => {
+                let k = if l.center { 2.0 } else { 1.0 };
+                let w = ((p.x - anchor.x).abs() * k).max((p.y - anchor.y).abs() * k / aspect);
+                l.fit = false;
+                l.width = w;
+                if !l.center {
+                    l.left = if left { anchor.x - w } else { anchor.x };
+                    l.top = if top { anchor.y - w * aspect } else { anchor.y };
+                }
+            }
+        }
+        l.update(aspect);
+        if let PhotoDrag::Resize { anchor, left, top } = d {
+            // Keep the anchor fixed even when the size was clamped.
+            if !l.center {
+                l.left = if left { anchor.x - l.width } else { anchor.x };
+                l.top = if top { anchor.y - l.width * aspect } else { anchor.y };
+            }
+        }
+    }
+    if resp.drag_stopped() {
+        ph.drag = None;
+    }
+
+    // Paper, photo, frame and handles.
+    let r = ph.layout.rect(aspect);
+    let sr = egui::Rect::from_min_max(to_screen(r.min), to_screen(r.max));
+    painter.rect_filled(paper.translate(vec2(0.0, 2.0)).expand(1.0), 2, Color32::from_black_alpha(40));
+    painter.rect_filled(paper, 0, Color32::WHITE);
+    let paper_painter = painter.with_clip_rect(paper);
+    paper_painter.image(ph.tex.id(), sr, egui::Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), Color32::WHITE);
+    if ph.layout.crop_marks {
+        for [a, b] in crate::printing::crop_marks(r) {
+            paper_painter.line_segment([to_screen(a), to_screen(b)], Stroke::new(1.0, Color32::BLACK));
+        }
+    }
+    painter.rect_stroke(sr, 0, Stroke::new(1.0, pal.accent), egui::StrokeKind::Middle);
+    for c in [sr.left_top(), sr.right_top(), sr.left_bottom(), sr.right_bottom()] {
+        let h = egui::Rect::from_center_size(c, vec2(8.0, 8.0));
+        painter.rect_filled(h, 1, Color32::WHITE);
+        painter.rect_stroke(h, 1, Stroke::new(1.0, pal.accent), egui::StrokeKind::Middle);
+    }
+    let u = ph.units;
+    let label = format!("{} × {}{}", fmt_len(page.x, u), fmt_len(page.y, u), u.suffix());
+    painter.text(pos2(area.center().x, paper.max.y + 10.0), egui::Align2::CENTER_CENTER, label, FontId::proportional(11.0), pal.text_weak);
+    (paper, s)
+}
+
+fn fmt_len(pt: f32, u: crate::printing::Units) -> String {
+    format!("{:.*}", u.decimals(), pt / u.pt())
+}
+
+/// Photoshop's Position and Size clusters: paper, orientation, centre/top/left, scale/width/height.
+fn photo_controls(app: &mut App, ui: &mut Ui, ph: &mut PhotoPrint) {
+    use crate::printing::{Units, PAPERS};
+    let pal = Palette::of(ui.ctx());
+    let aspect = ph.aspect();
+    let before = ph.layout;
+    let u = ph.units;
+    fn len(v: &mut f32, u: crate::printing::Units) -> egui::DragValue<'_> {
+        egui::DragValue::new(v).speed(0.01 * 72.0 / u.pt()).max_decimals(u.decimals()).min_decimals(u.decimals()).suffix(u.suffix())
+    }
+    egui::Grid::new("print-paper").num_columns(2).spacing(vec2(10.0, 8.0)).show(ui, |ui| {
+        ui.label("Paper:");
+        let mut paper = ph.layout.paper;
+        egui::ComboBox::from_id_salt("paper").selected_text(PAPERS[paper].name).width(150.0).show_ui(ui, |ui| {
+            for (i, p) in PAPERS.iter().enumerate() {
+                ui.selectable_value(&mut paper, i, p.name);
+            }
+        });
+        if paper != ph.layout.paper {
+            ph.layout.paper = paper;
+            ph.paper_chosen = true;
+            app.settings.print_paper = Some(PAPERS[paper].name.to_string());
+            app.settings.save();
+        }
+        ui.end_row();
+        ui.label("Layout:");
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut ph.layout.landscape, false, "Portrait");
+            ui.selectable_value(&mut ph.layout.landscape, true, "Landscape");
+        });
+        ui.end_row();
+    });
+    section(ui, "Position");
+    ui.checkbox(&mut ph.layout.center, "Center");
+    ui.add_space(4.0);
+    egui::Grid::new("print-pos").num_columns(4).spacing(vec2(8.0, 8.0)).show(ui, |ui| {
+        ui.label("Top:");
+        let mut top = ph.layout.top / u.pt();
+        if ui.add_enabled(!ph.layout.center, len(&mut top, u)).changed() {
+            ph.layout.top = top * u.pt();
+        }
+        ui.label("Left:");
+        let mut left = ph.layout.left / u.pt();
+        if ui.add_enabled(!ph.layout.center, len(&mut left, u)).changed() {
+            ph.layout.left = left * u.pt();
+        }
+        ui.end_row();
+    });
+    section(ui, "Scaled Print Size");
+    let fit = ph.layout.fit;
+    egui::Grid::new("print-size").num_columns(4).spacing(vec2(8.0, 8.0)).show(ui, |ui| {
+        ui.label("Scale:");
+        let mut pct = ph.layout.width / ph.native.x.max(1e-3) * 100.0;
+        if ui.add_enabled(!fit, egui::DragValue::new(&mut pct).speed(0.5).max_decimals(1).suffix("%")).changed() {
+            ph.layout.width = pct / 100.0 * ph.native.x;
+        }
+        ui.end_row();
+        ui.label("Width:");
+        let mut w = ph.layout.width / u.pt();
+        if ui.add_enabled(!fit, len(&mut w, u)).changed() {
+            ph.layout.width = w * u.pt();
+        }
+        ui.label("Height:");
+        let mut h = ph.layout.width * aspect / u.pt();
+        if ui.add_enabled(!fit, len(&mut h, u)).changed() {
+            ph.layout.width = h * u.pt() / aspect;
+        }
+        ui.end_row();
+    });
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut ph.layout.fit, "Scale to Fit Media");
+        let ppi = ph.px.0 as f32 / (ph.layout.width / 72.0).max(1e-3);
+        ui.label(RichText::new(format!("Print Resolution: {ppi:.0} PPI")).color(if ppi < 150.0 { Color32::from_rgb(0xE0, 0x8A, 0x00) } else { pal.text_weak }))
+            .on_hover_text("Pixels per inch on paper. Below about 150 PPI photos start to look soft.");
+    });
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label("Units:");
+        let mut units = ph.units;
+        egui::ComboBox::from_id_salt("print-units").selected_text(units.name()).width(80.0).show_ui(ui, |ui| {
+            for x in Units::ALL {
+                ui.selectable_value(&mut units, x, x.name());
+            }
+        });
+        if units != ph.units {
+            ph.units = units;
+            app.settings.print_units = Some(units.name().to_string());
+            app.settings.save();
+        }
+        ui.add_space(12.0);
+        ui.checkbox(&mut ph.layout.crop_marks, "Corner Crop Marks").on_hover_text("Marks at the corners to cut the print out along");
+    });
+    if ph.layout != before {
+        // Typing a size or position turns off the automatic modes, like in Photoshop.
+        if ph.layout.width != before.width {
+            ph.layout.fit = false;
+        }
+        if ph.layout.top != before.top || ph.layout.left != before.left {
+            ph.layout.center = false;
+        }
+        ph.layout.update(aspect);
+    }
+    if ph.layout.clipped(aspect) {
+        ui.add_space(6.0);
+        ui.label(RichText::new(format!("{} The image is larger than the paper; some of it won’t be printed.", egui_phosphor::regular::WARNING)).color(Color32::from_rgb(0xE0, 0x8A, 0x00)));
+    }
+}
+
+fn section(ui: &mut Ui, title: &str) {
+    ui.add_space(10.0);
+    ui.label(RichText::new(title).font(FontId::new(13.0, bold())));
+    ui.add_space(2.0);
 }
 
 fn scan_dialog(app: &mut App, ctx: &egui::Context, st: &mut ScanState) -> bool {

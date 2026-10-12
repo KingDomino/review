@@ -51,6 +51,9 @@ pub struct Settings {
     pub live_thumbnails: bool,
     /// Live Text: recognise text in photos and scanned pages.
     pub live_text: bool,
+    /// Photo printing: last paper and units picked (None = from the printer / region).
+    pub print_paper: Option<String>,
+    pub print_units: Option<String>,
     /// The settings file as this window last read or wrote it (see `save`).
     #[serde(skip)]
     synced: serde_json::Value,
@@ -82,6 +85,8 @@ impl Default for Settings {
             export_quality: 85,
             live_thumbnails: true,
             live_text: true,
+            print_paper: None,
+            print_units: None,
             synced: serde_json::Value::Null,
         }
     }

@@ -475,6 +475,9 @@ fn toolbar(app: &mut App, ui: &mut Ui) {
             if tool_button(ui, ph::EXPORT, "Export As…", false, ready).clicked() {
                 app.run(Action::ExportAs);
             }
+            if tool_button(ui, ph::PRINTER, "Print… (Ctrl+P)", false, ready && app.enabled(Action::Print)).clicked() {
+                app.run(Action::Print);
+            }
             if is_pdf && app.doc().and_then(|d| d.info.as_ref()).map(|i| !i.fields.is_empty()).unwrap_or(false) {
                 if tool_button(ui, ph::TEXTBOX, "Highlight form fields", app.highlight_fields, true).clicked() {
                     app.run(Action::HighlightFields);

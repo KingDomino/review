@@ -1327,6 +1327,41 @@ pub fn images_to_pdf(images: &[&image::RgbaImage], dpi: f32, dest: &Path) -> Res
     std::fs::rename(&tmp, dest).map_err(|err| err.to_string())
 }
 
+/// Photo printing: each image placed at an exact size and position on a `page`-sized PDF page
+/// (points, origin top-left), optionally with corner crop marks.
+pub fn layout_to_pdf(page: egui::Vec2, placed: &[crate::printing::Placed], crop_marks: bool, dest: &Path) -> Result<(), String> {
+    let e = |e: mupdf::Error| e.to_string();
+    let tmp = tmp_path(dest);
+    {
+        let mut w = mupdf::DocumentWriter::new(tmp.to_string_lossy().as_ref(), "pdf", "compress").map_err(e)?;
+        for p in placed {
+            let (iw, ih) = (p.image.width() as i32, p.image.height() as i32);
+            let mut pix = Pixmap::new(&Colorspace::device_rgb(), 0, 0, iw, ih, true).map_err(e)?;
+            pix.samples_mut().copy_from_slice(p.image.as_raw());
+            let image = mupdf::Image::from_pixmap(&pix).map_err(e)?;
+            let dev = w.begin_page(mupdf::Rect::new(0.0, 0.0, page.x, page.y)).map_err(e)?;
+            let r = p.rect;
+            dev.fill_image(&image, &Matrix::new(r.width(), 0.0, 0.0, r.height(), r.min.x, r.min.y), 1.0, Default::default()).map_err(e)?;
+            if crop_marks {
+                // Hairlines drawn as thin filled rectangles.
+                let mut path = mupdf::Path::new().map_err(e)?;
+                let t = 0.25;
+                for [a, b] in crate::printing::crop_marks(r) {
+                    let q = Rect::from_two_pos(a, b).expand(t);
+                    path.move_to(q.min.x, q.min.y).map_err(e)?;
+                    path.line_to(q.max.x, q.min.y).map_err(e)?;
+                    path.line_to(q.max.x, q.max.y).map_err(e)?;
+                    path.line_to(q.min.x, q.max.y).map_err(e)?;
+                    path.close().map_err(e)?;
+                }
+                dev.fill_path(&path, false, &Matrix::IDENTITY, &Colorspace::device_rgb(), &[0.0, 0.0, 0.0], 1.0, Default::default()).map_err(e)?;
+            }
+            w.end_page(dev).map_err(e)?;
+        }
+    }
+    std::fs::rename(&tmp, dest).map_err(|err| err.to_string())
+}
+
 /// Convert any MuPDF-readable document (EPUB, XPS, CBZ, SVG…) to a PDF file.
 pub fn convert_to_pdf(path: &Path, password: Option<&str>, dest: &Path) -> Result<(), String> {
     let doc = open_doc(path, password).map_err(|e| format!("{e:?}"))?;

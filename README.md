@@ -49,7 +49,8 @@ for PDFs, images and 3D models, and appears under *Settings ▸ Apps ▸ Default
 *Settings ▸ Apps* or with **uninstall.cmd**.
 
 On Windows, Live Text uses the OCR engine built into Windows (no extra install), scanning uses
-the Windows scan dialog (WIA), and printing hands the document to the system print dialog. HEIC
+the Windows scan dialog (WIA), photos print straight through Windows printing, and PDFs are
+printed by the default PDF app. HEIC
 photos need `libheif.dll` on the `PATH`.
 
 To build it yourself on Windows: install Rust (rustup) and LLVM/clang, then
@@ -77,6 +78,7 @@ To build it yourself on Windows: install Rust (rustup) and LLVM/clang, then
 | Password-protected PDFs; Edit Permissions | ✓ |
 | Inspector: file info, editable PDF metadata and keywords, EXIF, GPS location (opens OpenStreetMap), annotations, security | ✓ |
 | Magnifier (\`), Slideshow, Full Screen, Print (CUPS) | ✓ |
+| **Photo printing** like Photoshop's Print Settings: drag the photo to place it on the paper, drag a corner to resize it, or type an exact size (e.g. 6 × 4 in on Letter), position, scale or Scale to Fit Media; paper size, orientation, units, print resolution read-out, corner crop marks ([how it was derived](docs/photoshop-print-analysis.md)) | ✓ |
 | New from Clipboard, Take Screenshot, Duplicate, Rename (double-click the title), Move to Trash, Revert to Saved | ✓ |
 | Undo/redo for everything, with Preview's action names | ✓ |
 | **Live Text**: select, copy, highlight and search text in photos and scanned PDF pages; a *Live Text* button outlines everything recognised | ✓ on-device, with Tesseract |

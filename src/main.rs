@@ -16,6 +16,7 @@ mod model3d;
 mod ocr;
 mod pdf;
 mod platform;
+mod printing;
 mod render;
 mod scanner;
 mod settings;
