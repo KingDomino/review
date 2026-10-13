@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Windows Installer package for Review: per-user, so no administrator rights are needed.
+     Built by scripts/package.sh with wixl (msitools), which defines Version, Exe and Icon and
+     generates filetypes.wxi from the extension list in windows/install.ps1.
+     It installs to the same place and registers the same file types as install.ps1. -->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="Review" Language="1033" Version="$(var.Version)" Manufacturer="KingDomino"
+           UpgradeCode="BEE2827E-4F6E-4205-82FD-C00D9C820C16">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perUser"
+             Description="Review $(var.Version)" Comments="View, annotate and edit PDFs, images and 3D models" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Review is already installed." />
+    <Media Id="1" Cabinet="review.cab" EmbedCab="yes" />
+
+    <Icon Id="review.ico" SourceFile="$(var.Icon)" />
+    <Property Id="ARPPRODUCTICON" Value="review.ico" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/KingDomino/review" />
+    <Property Id="ARPNOREPAIR" Value="1" />
+
+    <!-- Welcome + license, progress, then Finish with "Open Review". -->
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Open Review" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <CustomAction Id="LaunchReview" FileKey="ReviewExe" ExeCommand="" Return="asyncNoWait" />
+    <UIRef Id="ReviewUI" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="UserPrograms" Name="Programs">
+          <Directory Id="INSTALLDIR" Name="Review" />
+        </Directory>
+      </Directory>
+      <Directory Id="ProgramMenuFolder" />
+    </Directory>
+
+    <DirectoryRef Id="INSTALLDIR">
+      <Component Id="App" Guid="36532C09-01A2-4B56-B06C-44A189A54899">
+        <File Id="ReviewExe" Name="review.exe" Source="$(var.Exe)" />
+        <RegistryValue Root="HKCU" Key="Software\Review" Name="InstallDir" Type="string" Value="[INSTALLDIR]" KeyPath="yes" />
+        <!-- `review file.pdf` from a terminal. -->
+        <Environment Id="UserPath" Name="PATH" Value="[INSTALLDIR]" Part="last" Action="set" System="no" />
+        <RemoveFolder Id="RemoveInstallDir" On="uninstall" />
+      </Component>
+
+      <!-- "Open with ▸ Review" and Settings ▸ Apps ▸ Default apps. -->
+      <Component Id="FileTypes" Guid="2F3E5FB6-BE10-4611-A508-EF951C5BDBFD">
+        <RegistryValue Root="HKCU" Key="Software\Classes\Review.Document" Type="string" Value="Review Document" KeyPath="yes" />
+        <RegistryValue Root="HKCU" Key="Software\Classes\Review.Document\DefaultIcon" Type="string" Value="&quot;[INSTALLDIR]review.exe&quot;,0" />
+        <RegistryValue Root="HKCU" Key="Software\Classes\Review.Document\shell\open\command" Type="string" Value="&quot;[INSTALLDIR]review.exe&quot; &quot;%1&quot;" />
+        <RegistryValue Root="HKCU" Key="Software\Classes\Applications\review.exe\shell\open\command" Type="string" Value="&quot;[INSTALLDIR]review.exe&quot; &quot;%1&quot;" />
+        <RegistryValue Root="HKCU" Key="Software\Review\Capabilities" Name="ApplicationName" Type="string" Value="Review" />
+        <RegistryValue Root="HKCU" Key="Software\Review\Capabilities" Name="ApplicationDescription" Type="string" Value="View, annotate and edit PDFs, images and 3D models" />
+        <RegistryValue Root="HKCU" Key="Software\RegisteredApplications" Name="Review" Type="string" Value="Software\Review\Capabilities" />
+        <?include filetypes.wxi ?>
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="ProgramMenuFolder">
+      <Component Id="StartMenu" Guid="A34D935D-40DD-41CF-9EA9-B5AEED75CAEA">
+        <Shortcut Id="StartMenuShortcut" Name="Review" Description="View, annotate and edit PDFs, images and 3D models"
+                  Target="[INSTALLDIR]review.exe" WorkingDirectory="INSTALLDIR" />
+        <RegistryValue Root="HKCU" Key="Software\Review" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="Main" Title="Review" Level="1">
+      <ComponentRef Id="App" />
+      <ComponentRef Id="FileTypes" />
+      <ComponentRef Id="StartMenu" />
+    </Feature>
+  </Product>
+
+  <Fragment>
+    <UI Id="ReviewUI">
+      <UIRef Id="WixUI_Minimal" />
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchReview" Order="1"
+               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed" />
+    </UI>
+  </Fragment>
+</Wix>

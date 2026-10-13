@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AppStream metadata, shown by software centres (Discover, GNOME Software). -->
+<component type="desktop-application">
+  <id>io.github.kingdomino.review</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-or-later</project_license>
+  <name>Review</name>
+  <summary>View, annotate and edit PDFs, images and 3D models</summary>
+  <description>
+    <p>
+      Review brings the macOS Preview workflow to Linux: open PDFs and photos instantly, mark
+      them up, sign, fill forms, rearrange pages, crop, resize, adjust colour and export.
+    </p>
+    <ul>
+      <li>PDF, XPS, EPUB and comic books; PNG, JPEG, HEIC, WebP, TIFF, JPEG XL, camera RAW and more</li>
+      <li>Markup, signatures, form filling, page thumbnails and reordering</li>
+      <li>Crop, resize, adjust colour, remove backgrounds and export to other formats</li>
+      <li>Live Text: select and copy text in photos and scans</li>
+      <li>Photo printing with the size and position of the picture on the page</li>
+      <li>3D models: glTF, OBJ, STL and USD</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">review.desktop</launchable>
+  <url type="homepage">https://github.com/KingDomino/review</url>
+  <url type="bugtracker">https://github.com/KingDomino/review/issues</url>
+  <developer id="io.github.kingdomino">
+    <name>KingDomino</name>
+  </developer>
+  <categories>
+    <category>Graphics</category>
+    <category>Viewer</category>
+    <category>Office</category>
+  </categories>
+  <provides>
+    <binary>review</binary>
+  </provides>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="@VERSION@" date="@DATE@" />
+  </releases>
+</component>

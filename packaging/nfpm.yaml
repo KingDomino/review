@@ -1,0 +1,91 @@
+# .deb and .rpm packages, built by scripts/package.sh: it sets VERSION and ARCH and runs nfpm in a
+# staging folder holding the binary, desktop entry, AppStream metadata, icons and LICENSE.
+name: review
+version: ${VERSION}
+release: 1
+arch: ${ARCH}
+platform: linux
+section: graphics
+priority: optional
+maintainer: KingDomino <53811250+KingDomino@users.noreply.github.com>
+vendor: KingDomino
+homepage: https://github.com/KingDomino/review
+license: AGPL-3.0-or-later
+description: |-
+  View, annotate and edit PDFs, images and 3D models.
+  A fast, Preview-style viewer and editor: open PDFs and photos instantly, mark them up,
+  sign, fill forms, rearrange pages, crop, resize, adjust colour and export.
+
+contents:
+  - src: review
+    dst: /usr/bin/review
+    file_info: { mode: 0755 }
+  - src: review.desktop
+    dst: /usr/share/applications/review.desktop
+    file_info: { mode: 0644 }
+  - src: io.github.kingdomino.review.metainfo.xml
+    dst: /usr/share/metainfo/io.github.kingdomino.review.metainfo.xml
+    file_info: { mode: 0644 }
+  - src: icons/16x16/apps/review.png
+    dst: /usr/share/icons/hicolor/16x16/apps/review.png
+    file_info: { mode: 0644 }
+  - src: icons/24x24/apps/review.png
+    dst: /usr/share/icons/hicolor/24x24/apps/review.png
+    file_info: { mode: 0644 }
+  - src: icons/32x32/apps/review.png
+    dst: /usr/share/icons/hicolor/32x32/apps/review.png
+    file_info: { mode: 0644 }
+  - src: icons/48x48/apps/review.png
+    dst: /usr/share/icons/hicolor/48x48/apps/review.png
+    file_info: { mode: 0644 }
+  - src: icons/64x64/apps/review.png
+    dst: /usr/share/icons/hicolor/64x64/apps/review.png
+    file_info: { mode: 0644 }
+  - src: icons/128x128/apps/review.png
+    dst: /usr/share/icons/hicolor/128x128/apps/review.png
+    file_info: { mode: 0644 }
+  - src: icons/256x256/apps/review.png
+    dst: /usr/share/icons/hicolor/256x256/apps/review.png
+    file_info: { mode: 0644 }
+  - src: icons/512x512/apps/review.png
+    dst: /usr/share/icons/hicolor/512x512/apps/review.png
+    file_info: { mode: 0644 }
+  - src: icons/scalable/apps/review.svg
+    dst: /usr/share/icons/hicolor/scalable/apps/review.svg
+    file_info: { mode: 0644 }
+  - src: LICENSE
+    dst: /usr/share/licenses/review/LICENSE
+    packager: rpm
+    file_info: { mode: 0644 }
+  - src: LICENSE
+    dst: /usr/share/doc/review/copyright
+    packager: deb
+    file_info: { mode: 0644 }
+
+# Optional helpers: Live Text (Tesseract), printing, AVIF (HEIC is built in), scanning,
+# speech and screenshots. Review runs without any of them.
+overrides:
+  rpm:
+    depends:
+      - glibc >= 2.28
+    recommends:
+      - tesseract
+      - tesseract-langpack-eng
+      - cups-client
+      - libheif
+    suggests:
+      - sane-backends
+      - speech-dispatcher-utils
+      - colord
+  deb:
+    depends:
+      - libc6 (>= 2.28)
+    recommends:
+      - tesseract-ocr
+      - tesseract-ocr-eng
+      - cups-client
+      - libheif1
+    suggests:
+      - sane-utils
+      - speech-dispatcher
+      - colord

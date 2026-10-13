@@ -9,7 +9,27 @@ menus, shortcuts and panels follow Preview's own (recovered with
 but every line is original code built on [egui](https://github.com/emilk/egui) and
 [MuPDF](https://mupdf.com).
 
-## Install (Any Linux Distro)
+## Install (Fedora, Debian, Ubuntu)
+
+Download the package for your system from the [Releases](https://github.com/KingDomino/review/releases)
+page and open it with Discover / GNOME Software, or install it from a terminal:
+
+| System | Intel/AMD | ARM |
+|---|---|---|
+| Fedora, openSUSE, RHEL 8+ | `review-<version>-1.x86_64.rpm` | `review-<version>-1.aarch64.rpm` |
+| Debian, Ubuntu, Mint | `review_<version>-1_amd64.deb` | `review_<version>-1_arm64.deb` |
+
+```sh
+sudo dnf install ./review-*.rpm     # Fedora
+sudo apt install ./review_*.deb     # Debian / Ubuntu
+```
+
+The packages pull in Tesseract (Live Text), `cups-client` (printing) and libheif (AVIF) as
+recommended extras. Remove Review with `sudo dnf remove review` or `sudo apt remove review`. If you
+installed Review with `./install.sh` before, run `./install.sh --uninstall` first: a per-user copy
+in `~/.local` takes precedence over the package.
+
+## Install from source (any Linux distro)
 
 ```sh
 cd review
@@ -41,12 +61,16 @@ Optional runtime helpers (the installer tells you which ones are missing):
 
 ## Install (Windows 10 / 11)
 
-Grab `Review-windows-x64.zip` (Intel/AMD) or `Review-windows-arm64.zip` (ARM, e.g. Snapdragon
-or Windows on a Mac) from the [Releases](https://github.com/KingDomino/review/releases) page,
-unzip it, and double-click **install.cmd**. No administrator rights are needed: Review installs
-into `%LOCALAPPDATA%\Programs\Review`, adds a Start Menu entry, registers *Open with ▸ Review*
-for PDFs, images and 3D models, and appears under *Settings ▸ Apps ▸ Default apps*. Remove it from
-*Settings ▸ Apps* or with **uninstall.cmd**.
+Download `Review-<version>-x64.msi` (Intel/AMD) or `Review-<version>-arm64.msi` (ARM, e.g.
+Snapdragon or Windows on a Mac) from the [Releases](https://github.com/KingDomino/review/releases)
+page and double-click it. No administrator rights are needed: Review installs into
+`%LOCALAPPDATA%\Programs\Review`, adds a Start Menu entry, registers *Open with ▸ Review* for
+PDFs, images and 3D models, and appears under *Settings ▸ Apps ▸ Default apps*. New versions
+install over the old one; remove Review from *Settings ▸ Apps*.
+
+Prefer no installer? The `Review-windows-*.zip` files hold `review.exe`, which runs from any
+folder, plus **install.cmd** / **uninstall.cmd** that do the same as the MSI with a script. The
+MSI takes over an install made with install.cmd.
 
 On Windows, Live Text uses the OCR engine built into Windows (no extra install), scanning uses
 the Windows scan dialog (WIA), photos print straight through Windows printing, and PDFs are
@@ -56,7 +80,8 @@ Microsoft Store if it's missing).
 
 To build it yourself on Windows: install Rust (rustup) and LLVM/clang, then
 `cargo build --release` (MSVC) — or cross-compile from macOS/Linux with
-`ZIG_DIR=… scripts/cross-build.sh windows`.
+`ZIG_DIR=… scripts/cross-build.sh windows`. `scripts/package.sh` then turns `dist/` into the
+MSI, .deb and .rpm installers (needs msitools and nfpm).
 
 ## What it does
 
