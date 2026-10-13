@@ -1971,6 +1971,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
+name = "heic-decoder"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "102c786cb378778a8f44f640382f52eea3142e01e9ce22e75b515844019c1c3c"
+dependencies = [
+ "rayon",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "hermit-abi"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4208,7 +4218,7 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
 name = "review"
-version = "1.2.2"
+version = "1.2.3"
 dependencies = [
  "ab_glyph",
  "arboard",
@@ -4223,6 +4233,7 @@ dependencies = [
  "egui_kittest",
  "embed-resource",
  "gltf",
+ "heic-decoder",
  "image",
  "jxl-oxide",
  "kamadak-exif",

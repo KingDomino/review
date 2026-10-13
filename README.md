@@ -32,7 +32,7 @@ Optional runtime helpers (the installer tells you which ones are missing):
 | For | Package |
 |---|---|
 | Live Text | `tesseract`, `tesseract-langpack-eng` (installed by default; `--no-ocr` skips it). Add `tesseract-langpack-deu` etc. for more languages |
-| HEIC/HEIF/AVIF photos | `libheif`, plus `libheif-freeworld` (RPM Fusion) for iPhone HEVC photos |
+| AVIF photos | `libheif` (HEIC photos open without it) |
 | Import from Scanner | `sane-backends` (and your scanner's SANE driver) |
 | Soft Proof / Assign Profile | ICC profiles from `colord` (usually installed) |
 | Printing | `cups-client` (`lp`) |
@@ -50,10 +50,9 @@ for PDFs, images and 3D models, and appears under *Settings ▸ Apps ▸ Default
 
 On Windows, Live Text uses the OCR engine built into Windows (no extra install), scanning uses
 the Windows scan dialog (WIA), photos print straight through Windows printing, and PDFs are
-printed by the default PDF app. HEIC and AVIF photos open with Windows' own codecs, like in
-the Photos app: *HEIF Image Extensions* (built into Windows 11) and *HEVC Video Extensions* (often
-preinstalled by the PC maker; otherwise Review links to it in the Microsoft Store), or the free
-*AV1 Video Extension* for AVIF.
+printed by the default PDF app. HEIC photos open with Review's built-in decoder, with no
+codecs to install. AVIF images use Windows' free *AV1 Video Extension* (Review links to it in the
+Microsoft Store if it's missing).
 
 To build it yourself on Windows: install Rust (rustup) and LLVM/clang, then
 `cargo build --release` (MSVC) — or cross-compile from macOS/Linux with

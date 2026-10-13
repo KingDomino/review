@@ -186,9 +186,7 @@ hint() { printf '    %-38s %s\n' "$1" "$2"; }
 echo
 say "Optional extras:"
 if ! ls /usr/lib64/libheif.so.1 /usr/lib/libheif.so.1 /usr/lib/*/libheif.so.1 >/dev/null 2>&1; then
-  hint "HEIC/AVIF photos" "sudo dnf install libheif   (+ libheif-freeworld from RPM Fusion for iPhone photos)"
-else
-  hint "HEIC/AVIF photos" "ok (iPhone HEVC photos may also need libheif-freeworld from RPM Fusion)"
+  hint "AVIF images" "sudo dnf install libheif   (HEIC photos open without it)"
 fi
 have tesseract || hint "Live Text" "sudo dnf install tesseract tesseract-langpack-eng"
 have scanimage || hint "Import from Scanner" "sudo dnf install sane-backends sane-frontends"

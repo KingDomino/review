@@ -1,5 +1,5 @@
-//! HEIC / HEIF / AVIF on Windows through the Windows Imaging Component, i.e. the same codecs
-//! the Photos app uses (HEIF Image Extensions + HEVC Video Extensions, AV1 Video Extension).
+//! AVIF (and HEIF with codecs other than HEVC) on Windows through the Windows Imaging Component,
+//! i.e. the codecs the Photos app uses. HEIC photos are decoded in-process by `heic-decoder`.
 
 use windows::core::HSTRING;
 use windows::Win32::Foundation::WINCODEC_ERR_COMPONENTNOTFOUND;

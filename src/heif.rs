@@ -1,8 +1,8 @@
-//! HEIC / HEIF / AVIF decoding through the system libheif, loaded at runtime.
+//! AVIF (and HEIF with codecs other than HEVC) through the system libheif, loaded at runtime.
+//! HEIC photos are decoded in-process by `heic-decoder` (see `imaging::decode_heif`).
 //!
 //! Loading it dynamically keeps libheif out of the build: Review starts fine
-//! without it and gains HEIC support as soon as the library is installed
-//! (`libheif` on Fedora; HEVC photos also need `libheif-freeworld` from RPM Fusion).
+//! without it and gains AVIF support as soon as the library is installed (`libheif` on Fedora).
 
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::sync::OnceLock;
@@ -51,7 +51,7 @@ fn check(e: HeifError) -> Result<(), String> {
 /// Decode the primary image to RGBA. Returns (width, height, pixels, has_alpha).
 pub fn decode(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>, bool), String> {
     let lib = lib().ok_or(
-        "HEIC/AVIF needs libheif. Install it with: sudo dnf install libheif (and libheif-freeworld from RPM Fusion for iPhone photos)",
+        "AVIF needs libheif. Install it with: sudo dnf install libheif",
     )?;
     // SAFETY: the signatures below match libheif's public C API (heif.h, stable since 1.x).
     unsafe {
@@ -94,7 +94,7 @@ pub fn decode(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>, bool), String> {
             let mut img: *mut c_void = std::ptr::null_mut();
             let r = check(decode(handle, &mut img, HEIF_COLORSPACE_RGB, HEIF_CHROMA_INTERLEAVED_RGBA, std::ptr::null()));
             release_handle(handle);
-            r.map_err(|e| format!("{e}. iPhone (HEVC) photos need libheif-freeworld from RPM Fusion."))?;
+            r?;
             let w = width(img, HEIF_CHANNEL_INTERLEAVED);
             let h = height(img, HEIF_CHANNEL_INTERLEAVED);
             let mut stride: c_int = 0;

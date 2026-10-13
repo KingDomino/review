@@ -205,6 +205,13 @@ fn is_heif(bytes: &[u8]) -> bool {
 }
 
 fn decode_heif(bytes: &[u8], mut out: Loaded) -> Result<Loaded, String> {
+    // HEVC pictures (HEIC: iPhone photos and most cameras) are decoded here, so they open
+    // without system codecs. Other codecs in a HEIF container, mainly AV1 (AVIF), use the system's.
+    match heic_decoder::decode(bytes) {
+        Ok(d) => return heic_to_loaded(d, out),
+        Err(heic_decoder::HeifError::Unsupported(_) | heic_decoder::HeifError::NotHeif(_)) => {}
+        Err(e) => return Err(format!("Couldn’t decode this HEIC image ({e})")),
+    }
     let avif = bytes.len() > 12 && matches!(&bytes[8..12], b"avif" | b"avis");
     out.format = if avif { "AVIF image".into() } else { "HEIF image".into() };
     #[cfg(windows)]
@@ -225,6 +232,35 @@ fn decode_heif(bytes: &[u8], mut out: Loaded) -> Result<Loaded, String> {
         out.frames.push(Arc::new(RgbaImage::from_raw(w, h, rgba).ok_or("bad HEIF buffer")?));
         out.has_alpha = alpha;
     }
+    Ok(out)
+}
+
+/// Rotation, mirroring and cropping stored in the file are already applied by the decoder.
+fn heic_to_loaded(d: heic_decoder::DecodedImage, mut out: Loaded) -> Result<Loaded, String> {
+    let rgba = d.to_rgba8().map_err(|e| format!("Couldn’t decode this HEIC image ({e})"))?;
+    let mut img = RgbaImage::from_raw(rgba.width as u32, rgba.height as u32, rgba.data).ok_or("bad HEIF buffer")?;
+    if rgba.premultiplied {
+        for p in img.pixels_mut() {
+            if p[3] > 0 && p[3] < 255 {
+                for c in 0..3 {
+                    p[c] = ((p[c] as u32 * 255 + p[3] as u32 / 2) / p[3] as u32).min(255) as u8;
+                }
+            }
+        }
+    }
+    if let Some(icc) = &d.metadata.icc_profile {
+        out.icc_name = crate::color::profile_name(icc);
+        crate::color::to_srgb(&mut img, icc);
+    }
+    out.format = "HEIF image".into();
+    out.has_alpha = d.alpha.is_some();
+    out.color_model = match (d.chroma_format_idc == 0, out.has_alpha) {
+        (true, false) => "Grey".into(),
+        (true, true) => "Grey + Alpha".into(),
+        (false, false) => "RGB".into(),
+        (false, true) => "RGB + Alpha".into(),
+    };
+    out.frames.push(Arc::new(img));
     Ok(out)
 }
 
@@ -985,6 +1021,19 @@ mod sample_tests {
             let f = &l.frames[0];
             assert!(f.width() > 10 && f.height() > 10, "{p}");
             eprintln!("{p}: {} {}x{}", l.format, f.width(), f.height());
+        }
+    }
+
+    /// HEIC opens with the built-in decoder, so no system codec is needed (Windows, Fedora).
+    #[test]
+    fn decodes_heic_without_system_codecs() {
+        // Four colour quadrants, encoded by Apple's HEVC encoder (`sips -s format heic`).
+        let l = super::decode(include_bytes!("../tests/data/quadrants.heic"), "heic").unwrap();
+        let f = &l.frames[0];
+        assert_eq!((l.format.as_str(), f.dimensions(), l.has_alpha), ("HEIF image", (96, 64), false));
+        for ((x, y), want) in [((10, 10), [220, 30, 30]), ((86, 10), [30, 200, 30]), ((10, 54), [30, 30, 220]), ((86, 54), [240, 240, 240])] {
+            let p = f.get_pixel(x, y);
+            assert!((0..3).all(|c| p[c].abs_diff(want[c]) <= 12), "({x},{y}) is {p:?}, want {want:?}");
         }
     }
 }

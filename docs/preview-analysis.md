@@ -38,7 +38,7 @@ on Linux, so Review rebuilds each role:
 | Preview relies on | Review uses |
 |---|---|
 | PDFKit / CorePDF | MuPDF (`mupdf` crate) in a worker thread per document, parallel tile rasteriser |
-| ImageIO | `image` crate (PNG, JPEG, GIF, WebP, TIFF incl. multi-page, BMP, ICO, TGA, PNM, DDS, HDR, EXR, QOI), MuPDF for JPEG 2000 / PSD / JPEG XR, system libheif (loaded at runtime) for HEIC/HEIF/AVIF |
+| ImageIO | `image` crate (PNG, JPEG, GIF, WebP, TIFF incl. multi-page, BMP, ICO, TGA, PNM, DDS, HDR, EXR, QOI), MuPDF for JPEG 2000 / PSD / JPEG XR, a built-in pure-Rust decoder (`heic-decoder`) for HEIC, and the system's codecs (libheif / Windows Imaging Component) for AVIF |
 | CoreImage (`CIFilter`) | Own LUT + parallel per-pixel pipeline (`imaging::Adjust`) |
 | PaperKit / AnnotationKit | Own shape model drawn with egui, written as standard PDF annotations (or burned into image pixels) |
 | VisionKit "Remove Background" / Instant Alpha | Border flood-fill with feathering; tolerance-by-drag flood select |

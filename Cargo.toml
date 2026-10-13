@@ -1,6 +1,6 @@
 [package]
 name = "review"
-version = "1.2.2"
+version = "1.2.3"
 edition = "2021"
 description = "A fast, Preview-style PDF and image viewer and editor for Linux"
 license = "AGPL-3.0-or-later"
@@ -26,6 +26,7 @@ ab_glyph = "0.2"
 libloading = "0.8"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 lcms2 = { version = "6", features = ["static"] }
+heic-decoder = "0.1"
 jxl-oxide = { version = "0.12", features = ["image"] }
 rawler = "0.8"
 gltf = "1.4"
